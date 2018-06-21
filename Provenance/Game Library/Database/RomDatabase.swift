@@ -147,6 +147,11 @@ public final class RomDatabase {
 			RealmConfiguration.setDefaultRealmConfig()
 			try _sharedInstance = RomDatabase()
 			databaseInitilized = true
+            
+            guard let marioPath = Bundle.main.path(forResource: "MarioKart", ofType: "n64") else { fatalError() }
+            let url = URL(fileURLWithPath: marioPath)
+            let importer = PVGameImporter()
+            _ = importer.importFiles(atPaths: [url])
 
 			let existingLocalLibraries = _sharedInstance.realm.objects(PVLibrary.self).filter("isLocal == YES")
 
@@ -203,7 +208,7 @@ public final class RomDatabase {
     // and RomDatabase would just exist to provide context instances and init the initial database - jm
     public static var sharedInstance: RomDatabase {
         // Make sure real shared is inited first
-        let shared = RomDatabase._sharedInstance!
+        guard let shared = RomDatabase._sharedInstance else { return try! RomDatabase() }
 
         if Thread.isMainThread {
             return shared

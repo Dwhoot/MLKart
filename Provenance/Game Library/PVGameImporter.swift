@@ -1202,7 +1202,7 @@ extension PVGameImporter {
 
     // TODO: Mabye this should throw
     @discardableResult
-	private func importToDatabaseROM(atPath path: URL, system: PVSystem, relatedFiles: [URL]?) -> PVGame? {
+	public func importToDatabaseROM(atPath path: URL, system: PVSystem, relatedFiles: [URL]?) -> PVGame? {
         let database = RomDatabase.sharedInstance
 
         let filename = path.lastPathComponent

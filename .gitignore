@@ -46,3 +46,5 @@ playground.xcworkspace
 /fastlane/keys
 /PVSupport/Carthage/.Cartfile.resolved
 /Carthage/.Cartfile.resolved
+
+PVMupen64Plus/Plugins/

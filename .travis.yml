@@ -1,0 +1,64 @@
+language: objective-c
+xcode_workspace: Provenance.xcworkspace # path to your xcodeproj folder
+# xcode_scheme: Provenance-Release
+xcode_scheme: Provenance
+
+language: objective-c
+osx_image: xcode9.3
+
+cache:
+  directories:
+  - Carthage
+  - PVSupport/Carthage
+
+# branches:
+#   only:
+#     - develop
+#     - master
+env:
+  #environment variables
+  global:
+    - LANG=en_US.UTF-8
+    - LC_ALL=en_US.UTF-8
+    - WORKSPACE_NAME="Provenance.xcworkspace"
+    - PROJECT_NAME="Provenance.xcodeproj"
+    - SCHEME_IOS_APP="Provenance"
+    - SCHEME_TVOS_APP="ProvenanceTV"
+    - IOS_PLATFORM="iOS Simulator"
+    - TVOS_PLATFORM="tvOS Simulator"
+    - IOS_SDK=iphonesimulator11.3
+    - TVOS_SDK=appletvsimulator11.3
+    - CONFIGURATION="Debug"
+  matrix:
+    - DESTINATION="platform=$IOS_PLATFORM,OS=11.3,name=iPhone X" SCHEME="$SCHEME_IOS_APP" SDK="$IOS_SDK"
+    - DESTINATION="platform=$TVOS_PLATFORM,OS=11.3,name=Apple TV 4K" SCHEME="$SCHEME_TVOS_APP" SDK="$TVOS_SDK"
+before_install:
+  # - gem install xcpretty -N
+  - gem install xcpretty-travis-formatter --no-rdoc --no-ri --no-document --quiet
+  - brew update
+  - brew outdated swiftlint || brew upgrade swiftlint
+  - brew outdated carthage || brew upgrade carthage
+before_script:
+  # bootstrap the dependencies for the project
+    - carthage bootstrap --verbose --no-use-binaries --platform iOS,tvOS --cache-builds --project-directory "./PVSupport" --configuration $CONFIGURATION
+        # Output something every 10 minutes or Travis kills the job
+    - while sleep 9m; do echo "=====[ $SECONDS seconds still running ]====="; done &
+      # This can take a while so using the above to not make travis abort
+    - carthage bootstrap --verbose --no-use-binaries --platform iOS,tvOS --cache-builds --project-directory "./" --configuration $CONFIGURATION
+        # Killing background sleep loop
+    - kill %1
+after_success:
+  - wget https://raw.githubusercontent.com/k3rn31p4nic/travis-ci-discord-webhook/master/send.sh
+  - chmod +x send.sh
+  - ./send.sh success $WEBHOOK_URL
+  # Test code covered, add -enableCodeCoverage YES to xcodebuild
+  #- sleep 5
+  #- bash <(curl -s https://codecov.io/bash)
+after_failure:
+  - wget https://raw.githubusercontent.com/k3rn31p4nic/travis-ci-discord-webhook/master/send.sh
+  - chmod +x send.sh
+  - ./send.sh failure $WEBHOOK_URL
+script:
+  - set -o pipefail
+  - swiftlint
+  - xcodebuild -workspace "$WORKSPACE_NAME" -scheme "$SCHEME" -configuration "$CONFIGURATION" -destination "$DESTINATION" -sdk "$SDK" ONLY_ACTIVE_ARCH=YES CODE_SIGNING_REQUIRED=NO | xcpretty -f `xcpretty-travis-formatter`

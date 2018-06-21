@@ -25,20 +25,39 @@
   SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
-#include "mednafen.h"
-#include "settings-driver.h"
-#include "state-driver.h"
-#include "mednafen-driver.h"
-#include "MemoryStream.h"
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wall"
+#pragma clang diagnostic ignored "-Wextra"
+#include <mednafen/mednafen.h>
+#include <mednafen/settings-driver.h>
+#include <mednafen/state-driver.h>
+#include <mednafen/mednafen-driver.h>
+#include <mednafen/MemoryStream.h>
+#pragma clang diagnostic pop
 
 #import "MednafenGameCore.h"
 #import <OpenGLES/EAGL.h>
 #import <OpenGLES/ES3/gl.h>
 #import <OpenGLES/ES3/glext.h>
 
+#import <UIKit/UIKit.h>
 #import <PVSupport/OERingBuffer.h>
+#import <PVSupport/PVSupport-Swift.h>
+
+
+#define USE_PCE_FAST 0
+#define USE_SNES_FAUST 1
 
 #define GET_CURRENT_OR_RETURN(...) __strong __typeof__(_current) current = _current; if(current == nil) return __VA_ARGS__;
+
+@interface MednafenGameCore (MultiDisc)
++ (NSDictionary<NSString*,NSNumber*>*_Nonnull)multiDiscPSXGames;
+@end
+
+@interface MednafenGameCore (MultiTap)
++ (NSDictionary<NSString*,NSNumber*>*_Nonnull)multiTapPSXGames;
++ (NSArray<NSString*>*_Nonnull)multiTap5PlayerPort2;
+@end
 
 typedef struct OEIntPoint {
     int x;
@@ -77,6 +96,29 @@ static MDFNGI *game;
 static MDFN_Surface *backBufferSurf;
 static MDFN_Surface *frontBufferSurf;
 
+#pragma mark - Input maps
+int GBAMap[PVGBAButtonCount];
+int GBMap[PVGBButtonCount];
+int SNESMap[PVSNESButtonCount];
+int PCEMap[PVPCEButtonCount];
+int PCFXMap[PVPCFXButtonCount];
+
+// Map OE button order to Mednafen button order
+
+const int LynxMap[] = { 6, 7, 4, 5, 0, 1, 3, 2 }; // pause, b, 01, 02, d, u, l, r
+
+// u, d, l, r, a, b, start, select
+const int NESMap[] = { 4, 5, 6, 7, 0, 1, 3, 2};
+
+// Select, Triangle, X, Start, R1, R2, left stick u, left stick left,
+const int PSXMap[]  = { 4, 6, 7, 5, 12, 13, 14, 15, 10, 8, 1, 11, 9, 2, 3, 0, 16, 24, 23, 22, 21, 20, 19, 18, 17 };
+const int VBMap[]   = { 9, 8, 7, 6, 4, 13, 12, 5, 3, 2, 0, 1, 10, 11 };
+const int WSMap[]   = { 0, 2, 3, 1, 4, 6, 7, 5, 9, 10, 8, 11 };
+const int NeoMap[]  = { 0, 1, 2, 3, 4, 5, 6};
+
+// SMS, GG and MD unused as of now. Mednafen support is not maintained
+const int GenesisMap[] = { 5, 7, 11, 10, 0 ,1, 2, 3, 4, 6, 8, 9};
+
 namespace MDFN_IEN_VB
 {
     extern void VIP_SetParallaxDisable(bool disabled);
@@ -84,12 +126,9 @@ namespace MDFN_IEN_VB
     int mednafenCurrentDisplayMode = 1;
 }
 
-typedef enum MednaSystem {lynx, neogeo, pce, pcfx, psx, vb, wswan };
-
-@interface MednafenGameCore ()
+@interface MednafenGameCore () <PVPSXSystemResponderClient, PVWonderSwanSystemResponderClient, PVVirtualBoySystemResponderClient, PVPCESystemResponderClient, PVPCFXSystemResponderClient, PVPCECDSystemResponderClient, PVLynxSystemResponderClient, PVNeoGeoPocketSystemResponderClient, PVSNESSystemResponderClient, PVNESSystemResponderClient, PVGBSystemResponderClient, PVGBASystemResponderClient>
 {
     uint32_t *inputBuffer[8];
-    MednaSystem systemType;
     int videoWidth, videoHeight;
     int videoOffsetX, videoOffsetY;
     int multiTapPlayerCount;
@@ -100,7 +139,8 @@ typedef enum MednaSystem {lynx, neogeo, pce, pcfx, psx, vb, wswan };
     NSString *mednafenCoreModule;
     NSTimeInterval mednafenCoreTiming;
     OEIntSize mednafenCoreAspect;
-    NSUInteger maxDiscs;
+
+	EmulateSpecStruct spec;
 }
 
 @end
@@ -116,32 +156,37 @@ static __weak MednafenGameCore *_current;
 
 static void mednafen_init(MednafenGameCore* current)
 {
-    //passing by parameter
-    //GET_CURRENT_OR_RETURN();
-
     NSString* batterySavesDirectory = current.batterySavesPath;
     NSString* biosPath = current.BIOSPath;
-    
-    std::vector<MDFNGI*> ext;
-    MDFNI_InitializeModules(ext);
+
+	MDFNI_InitializeModules();
 
     std::vector<MDFNSetting> settings;
-
-    //passing by parameter
-    //NSString *batterySavesDirectory = [self batterySavesPath];
-    //NSString *biosPath = current.biosDirectoryPath;
 
     MDFNI_Initialize([biosPath UTF8String], settings);
 
     // Set bios/system file and memcard save paths
     MDFNI_SetSetting("pce.cdbios", [[[biosPath stringByAppendingPathComponent:@"syscard3"] stringByAppendingPathExtension:@"pce"] UTF8String]); // PCE CD BIOS
+	MDFNI_SetSetting("pce_fast.cdbios", [[[biosPath stringByAppendingPathComponent:@"syscard3"] stringByAppendingPathExtension:@"pce"] UTF8String]); // PCE CD BIOS
     MDFNI_SetSetting("pcfx.bios", [[[biosPath stringByAppendingPathComponent:@"pcfx"] stringByAppendingPathExtension:@"rom"] UTF8String]); // PCFX BIOS
+
     MDFNI_SetSetting("psx.bios_jp", [[[biosPath stringByAppendingPathComponent:@"scph5500"] stringByAppendingPathExtension:@"bin"] UTF8String]); // JP SCPH-5500 BIOS
     MDFNI_SetSetting("psx.bios_na", [[[biosPath stringByAppendingPathComponent:@"scph5501"] stringByAppendingPathExtension:@"bin"] UTF8String]); // NA SCPH-5501 BIOS
     MDFNI_SetSetting("psx.bios_eu", [[[biosPath stringByAppendingPathComponent:@"scph5502"] stringByAppendingPathExtension:@"bin"] UTF8String]); // EU SCPH-5502 BIOS
+
     MDFNI_SetSetting("filesys.path_sav", [batterySavesDirectory UTF8String]); // Memcards
 
+	// Global settings
+
+	// Enable time synchronization(waiting) for frame blitting.
+	// Disable to reduce latency, at the cost of potentially increased video "juddering", with the maximum reduction in latency being about 1 video frame's time.
+	// Will work best with emulated systems that are not very computationally expensive to emulate, combined with running on a relatively fast CPU.
+	// Default: 1
+//	MDFNI_SetSettingB("video.blit_timesync", false);
+//	MDFNI_SetSettingB("video.fs", false); // Enable fullscreen mode. Default: 0
+
     // VB defaults. dox http://mednafen.sourceforge.net/documentation/09x/vb.html
+	// VirtualBoy
     MDFNI_SetSetting("vb.disable_parallax", "1");       // Disable parallax for BG and OBJ rendering
     MDFNI_SetSetting("vb.anaglyph.preset", "disabled"); // Disable anaglyph preset
     MDFNI_SetSetting("vb.anaglyph.lcolor", "0xFF0000"); // Anaglyph l color
@@ -149,733 +194,82 @@ static void mednafen_init(MednafenGameCore* current)
     //MDFNI_SetSetting("vb.allow_draw_skip", "1");      // Allow draw skipping
     //MDFNI_SetSetting("vb.instant_display_hack", "1"); // Display latency reduction hack
 
-    MDFNI_SetSetting("pce.slstart", "0"); // PCE: First rendered scanline
-    MDFNI_SetSetting("pce.slend", "239"); // PCE: Last rendered scanline
+	// SNES Faust settings
+	MDFNI_SetSettingB("snes_faust.spex", false);
+	// Enable 1-frame speculative execution for video output.
+	// Hack to reduce input->output video latency by 1 frame. Enabling will increase CPU usage,
+	// and may cause video glitches(such as "jerkiness") in some oddball games, but most commercially-released games should be fine.
+	// Default 0
 
-    MDFNI_SetSetting("psx.h_overscan", "0"); // Remove PSX overscan
+//	MDFNI_SetSetting("snes_faust.special", "nn2x");
 
-    // PlayStation Multitap supported games (incomplete list)
-    NSDictionary *multiTapGames =
-    @{
-      @"SLES-02339" : @3, // Arcade Party Pak (Europe, Australia)
-      @"SLUS-00952" : @3, // Arcade Party Pak (USA)
-      @"SLES-02537" : @3, // Bishi Bashi Special (Europe)
-      @"SLPM-86123" : @3, // Bishi Bashi Special (Japan)
-      @"SLPM-86539" : @3, // Bishi Bashi Special 3: Step Champ (Japan)
-      @"SLPS-01701" : @3, // Capcom Generation - Dai 4 Shuu Kokou no Eiyuu (Japan)
-      @"SLPS-01567" : @3, // Captain Commando (Japan)
-      @"SLUS-00682" : @3, // Jeopardy! (USA)
-      @"SLUS-01173" : @3, // Jeopardy! 2nd Edition (USA)
-      @"SLES-03752" : @3, // Quiz Show (Italy) (Disc 1)
-      @"SLES-13752" : @3, // Quiz Show (Italy) (Disc 2)
-      @"SLES-02849" : @3, // Rampage - Through Time (Europe) (En,Fr,De)
-      @"SLUS-01065" : @3, // Rampage - Through Time (USA)
-      @"SLES-02021" : @3, // Rampage 2 - Universal Tour (Europe)
-      @"SLUS-00742" : @3, // Rampage 2 - Universal Tour (USA)
-      @"SLUS-01174" : @3, // Wheel of Fortune - 2nd Edition (USA)
-      @"SLES-03499" : @3, // You Don't Know Jack (Germany)
-      @"SLUS-00716" : @3, // You Don't Know Jack (USA) (Disc 1)
-      @"SLUS-00762" : @3, // You Don't Know Jack (USA) (Disc 2)
-      @"SLUS-01194" : @3, // You Don't Know Jack - Mock 2 (USA)
-      @"SLES-00015" : @4, // Actua Golf (Europe) (En,Fr,De)
-      @"SLPS-00298" : @4, // Actua Golf (Japan)
-      @"SLUS-00198" : @4, // VR Golf '97 (USA) (En,Fr)
-      @"SLES-00044" : @4, // Actua Golf 2 (Europe)
-      @"SLUS-00636" : @4, // FOX Sports Golf '99 (USA)
-      @"SLES-01042" : @4, // Actua Golf 3 (Europe)
-      @"SLES-00188" : @4, // Actua Ice Hockey (Europe) (En,Fr,De,Sv,Fi)
-      @"SLPM-86078" : @4, // Actua Ice Hockey (Japan)
-      @"SLES-01226" : @4, // Actua Ice Hockey 2 (Europe)
-      @"SLES-00021" : @4, // Actua Soccer 2 (Europe) (En,Fr)
-      @"SLES-01029" : @4, // Actua Soccer 2 (Germany) (En,De)
-      @"SLES-01028" : @4, // Actua Soccer 2 (Italy)
-      @"SLES-00265" : @4, // Actua Tennis (Europe)
-      @"SLES-01396" : @4, // Actua Tennis (Europe) (Fr,De)
-      @"SLES-00189" : @4, // Adidas Power Soccer (Europe) (En,Fr,De,Es,It)
-      @"SCUS-94502" : @4, // Adidas Power Soccer (USA)
-      @"SLES-00857" : @4, // Adidas Power Soccer 2 (Europe) (En,Fr,De,Es,It,Nl)
-      @"SLES-00270" : @4, // Adidas Power Soccer International '97 (Europe) (En,Fr,De,Es,It,Nl)
-      @"SLES-01239" : @4, // Adidas Power Soccer 98 (Europe) (En,Fr,De,Es,It,Nl)
-      @"SLUS-00547" : @4, // Adidas Power Soccer 98 (USA)
-      @"SLES-03963" : @4, // All Star Tennis (Europe)
-      @"SLPS-02228" : @4, // Simple 1500 Series Vol. 26 - The Tennis (Japan)
-      @"SLUS-01348" : @4, // Tennis (USA)
-      @"SLES-01433" : @4, // All Star Tennis '99 (Europe) (En,Fr,De,Es,It)
-      @"SLES-02764" : @4, // All Star Tennis 2000 (Europe) (En,De,Es,It)
-      @"SLES-02765" : @4, // All Star Tennis 2000 (France)
-      @"SCES-00263" : @4, // Namco Tennis Smash Court (Europe)
-      @"SLPS-00450" : @4, // Smash Court (Japan)
-      @"SCES-01833" : @4, // Anna Kournikova's Smash Court Tennis (Europe)
-      @"SLPS-01693" : @4, // Smash Court 2 (Japan)
-      @"SLPS-03001" : @4, // Smash Court 3 (Japan)
-      @"SLES-03579" : @4, // Junior Sports Football (Europe)
-      @"SLES-03581" : @4, // Junior Sports Fussball (Germany)
-      @"SLUS-01094" : @4, // Backyard Soccer (USA)
-      @"SLES-03210" : @4, // Hunter, The (Europe)
-      @"SLPM-86400" : @4, // SuperLite 1500 Series - Battle Sugoroku the Hunter - A.R.0062 (Japan)
-      @"SLUS-01335" : @4, // Battle Hunter (USA)
-      @"SLES-00476" : @4, // Blast Chamber (Europe) (En,Fr,De,Es,It)
-      @"SLPS-00622" : @4, // Kyuu Bakukku (Japan)
-      @"SLUS-00219" : @4, // Blast Chamber (USA)
-      @"SLES-00845" : @4, // Blaze & Blade - Eternal Quest (Europe)
-      @"SLES-01274" : @4, // Blaze & Blade - Eternal Quest (Germany)
-      @"SLPS-01209" : @4, // Blaze & Blade - Eternal Quest (Japan)
-      @"SLPS-01576" : @4, // Blaze & Blade Busters (Japan)
-      @"SCES-01443" : @4, // Blood Lines (Europe) (En,Fr,De,Es,It)
-      @"SLPS-03002" : @4, // Bomberman Land (Japan) (v1.0) / (v1.1) / (v1.2)
-      @"SLES-00258" : @4, // Break Point (Europe) (En,Fr)
-      @"SLES-02854" : @4, // Break Out (Europe) (En,Fr,De,It)
-      @"SLUS-01170" : @4, // Break Out (USA)
-      @"SLES-00759" : @4, // Brian Lara Cricket (Europe)
-      @"SLES-01486" : @4, // Caesars Palace II (Europe)
-      @"SLES-02476" : @4, // Caesars Palace 2000 - Millennium Gold Edition (Europe)
-      @"SLUS-01089" : @4, // Caesars Palace 2000 - Millennium Gold Edition (USA)
-      @"SLES-03206" : @4, // Card Shark (Europe)
-      @"SLPS-02225" : @4, // Trump Shiyouyo! (Japan) (v1.0)
-      @"SLPS-02612" : @4, // Trump Shiyouyo! (Japan) (v1.1)
-      @"SLES-02825" : @4, // Catan - Die erste Insel (Germany)
-      @"SLUS-00886" : @4, // Chessmaster II (USA)
-      @"SLES-00753" : @4, // Circuit Breakers (Europe) (En,Fr,De,Es,It)
-      @"SLUS-00697" : @4, // Circuit Breakers (USA)
-      @"SLUS-00196" : @4, // College Slam (USA)
-      @"SCES-02834" : @4, // Crash Bash (Europe) (En,Fr,De,Es,It)
-      @"SCPS-10140" : @4, // Crash Bandicoot Carnival (Japan)
-      @"SCUS-94570" : @4, // Crash Bash (USA)
-      @"SCES-02105" : @4, // CTR - Crash Team Racing (Europe) (En,Fr,De,Es,It,Nl) (EDC) / (No EDC)
-      @"SCPS-10118" : @4, // Crash Bandicoot Racing (Japan)
-      @"SCUS-94426" : @4, // CTR - Crash Team Racing (USA)
-      @"SLES-02371" : @4, // CyberTiger (Australia)
-      @"SLES-02370" : @4, // CyberTiger (Europe) (En,Fr,De,Es,Sv)
-      @"SLUS-01004" : @4, // CyberTiger (USA)
-      @"SLES-03488" : @4, // David Beckham Soccer (Europe)
-      @"SLES-03682" : @4, // David Beckham Soccer (Europe) (Fr,De,Es,It)
-      @"SLUS-01455" : @4, // David Beckham Soccer (USA)
-      @"SLES-00096" : @4, // Davis Cup Complete Tennis (Europe)
-      @"SCES-03705" : @4, // Disney's Party Time with Winnie the Pooh (Europe)
-      @"SCES-03744" : @4, // Disney's Winnie l'Ourson - C'est la récré! (France)
-      @"SCES-03745" : @4, // Disney's Party mit Winnie Puuh (Germany)
-      @"SCES-03749" : @4, // Disney Pooh e Tigro! E Qui la Festa (Italy)
-      @"SLPS-03460" : @4, // Pooh-San no Minna de Mori no Daikyosou! (Japan)
-      @"SCES-03746" : @4, // Disney's Spelen met Winnie de Poeh en zijn Vriendjes! (Netherlands)
-      @"SCES-03748" : @4, // Disney Ven a la Fiesta! con Winnie the Pooh (Spain)
-      @"SLUS-01437" : @4, // Disney's Pooh's Party Game - In Search of the Treasure (USA)
-      @"SLPS-00155" : @4, // DX Jinsei Game (Japan)
-      @"SLPS-00918" : @4, // DX Jinsei Game II (Japan) (v1.0) / (v1.1)
-      @"SLPS-02469" : @4, // DX Jinsei Game III (Japan)
-      @"SLPM-86963" : @4, // DX Jinsei Game IV (Japan)
-      @"SLPM-87187" : @4, // DX Jinsei Game V (Japan)
-      @"SLES-02823" : @4, // ECW Anarchy Rulz (Europe)
-      @"SLES-03069" : @4, // ECW Anarchy Rulz (Germany)
-      @"SLUS-01169" : @4, // ECW Anarchy Rulz (USA)
-      @"SLES-02535" : @4, // ECW Hardcore Revolution (Europe) (v1.0) / (v1.1)
-      @"SLES-02536" : @4, // ECW Hardcore Revolution (Germany) (v1.0) / (v1.1)
-      @"SLUS-01045" : @4, // ECW Hardcore Revolution (USA)
-      @"SLUS-01186" : @4, // ESPN MLS Gamenight (USA)
-      @"SLES-03082" : @4, // European Super League (Europe) (En,Fr,De,Es,It,Pt)
-      @"SLES-02142" : @4, // F.A. Premier League Stars, The (Europe)
-      @"SLES-02143" : @4, // Bundesliga Stars 2000 (Germany)
-      @"SLES-02702" : @4, // Primera Division Stars (Spain)
-      @"SLES-03063" : @4, // F.A. Premier League Stars 2001, The (Europe)
-      @"SLES-03064" : @4, // LNF Stars 2001 (France)
-      @"SLES-03065" : @4, // Bundesliga Stars 2001 (Germany)
-      @"SLES-00548" : @4, // Fantastic Four (Europe) (En,Fr,De,Es,It)
-      @"SLPS-01034" : @4, // Fantastic Four (Japan)
-      @"SLUS-00395" : @4, // Fantastic Four (USA)
-      @"SLPS-02065" : @4, // Fire Pro Wrestling G (Japan) (v1.0)
-      @"SLPS-02817" : @4, // Fire Pro Wrestling G (Japan) (v1.1)
-      @"SLES-00704" : @4, // Frogger (Europe) (En,Fr,De,Es,It)
-      @"SLPS-01399" : @4, // Frogger (Japan)
-      @"SLUS-00506" : @4, // Frogger (USA)
-      @"SLES-02853" : @4, // Frogger 2 - Swampy's Revenge (Europe) (En,Fr,De,It)
-      @"SLUS-01172" : @4, // Frogger 2 - Swampy's Revenge (USA)
-      @"SLES-01241" : @4, // Gekido - Urban Fighters (Europe) (En,Fr,De,Es,It)
-      @"SLUS-00970" : @4, // Gekido - Urban Fighters (USA)
-      @"SLPM-86761" : @4, // Simple 1500 Series Vol. 60 - The Table Hockey (Japan)
-      @"SLPS-03362" : @4, // Simple Character 2000 Series Vol. 05 - High School Kimengumi - The Table Hockey (Japan)
-      @"SLES-01041" : @4, // Hogs of War (Europe)
-      @"SLUS-01195" : @4, // Hogs of War (USA)
-      @"SCES-00983" : @4, // Everybody's Golf (Europe) (En,Fr,De,Es,It)
-      @"SCPS-10042" : @4, // Minna no Golf (Japan)
-      @"SCUS-94188" : @4, // Hot Shots Golf (USA)
-      @"SCES-02146" : @4, // Everybody's Golf 2 (Europe)
-      @"SCPS-10093" : @4, // Minna no Golf 2 (Japan) (v1.0)
-      @"SCUS-94476" : @4, // Hot Shots Golf 2 (USA)
-      @"SLES-03595" : @4, // Hot Wheels - Extreme Racing (Europe)
-      @"SLUS-01293" : @4, // Hot Wheels - Extreme Racing (USA)
-      @"SLPM-86651" : @4, // Hunter X Hunter - Maboroshi no Greed Island (Japan)
-      @"SLES-00309" : @4, // Hyper Tennis - Final Match (Europe)
-      @"SLES-00309" : @4, // Hyper Final Match Tennis (Japan)
-      @"SLES-02550" : @4, // International Superstar Soccer (Europe) (En,De)
-      @"SLES-03149" : @4, // International Superstar Soccer (Europe) (Fr,Es,It)
-      @"SLPM-86317" : @4, // Jikkyou J. League 1999 - Perfect Striker (Japan)
-      @"SLES-00511" : @4, // International Superstar Soccer Deluxe (Europe)
-      @"SLPM-86538" : @4, // J. League Jikkyou Winning Eleven 2000 (Japan)
-      @"SLPM-86668" : @4, // J. League Jikkyou Winning Eleven 2000 2nd (Japan)
-      @"SLPM-86835" : @4, // J. League Jikkyou Winning Eleven 2001 (Japan)
-      @"SLES-00333" : @4, // International Track & Field (Europe)
-      @"SLPM-86002" : @4, // Hyper Olympic in Atlanta (Japan)
-      @"SLUS-00238" : @4, // International Track & Field (USA)
-      @"SLES-02448" : @4, // International Track & Field 2 (Europe)
-      @"SLPM-86482" : @4, // Ganbare! Nippon! Olympic 2000 (Japan)
-      @"SLUS-00987" : @4, // International Track & Field 2000 (USA)
-      @"SLES-02424" : @4, // ISS Pro Evolution (Europe) (Es,It)
-      @"SLES-02095" : @4, // ISS Pro Evolution (Europe) (En,Fr,De) (EDC) / (No EDC)
-      @"SLPM-86291" : @4, // World Soccer Jikkyou Winning Eleven 4 (Japan) (v1.0) / (v1.1)
-      @"SLUS-01014" : @4, // ISS Pro Evolution (USA)
-      @"SLES-03321" : @4, // ISS Pro Evolution 2 (Europe) (En,Fr,De)
-      @"SLPM-86600" : @4, // World Soccer Jikkyou Winning Eleven 2000 - U-23 Medal e no Chousen (Japan)
-      @"SLPS-00832" : @4, // Iwatobi Penguin Rocky x Hopper (Japan)
-      @"SLPS-01283" : @4, // Iwatobi Penguin Rocky x Hopper 2 - Tantei Monogatari (Japan)
-      @"SLES-02572" : @4, // TOCA World Touring Cars (Europe) (En,Fr,De)
-      @"SLES-02573" : @4, // TOCA World Touring Cars (Europe) (Es,It)
-      @"SLPS-02852" : @4, // WTC World Touring Car Championship (Japan)
-      @"SLUS-01139" : @4, // Jarrett & Labonte Stock Car Racing (USA)
-      @"SLES-03328" : @4, // Jetracer (Europe) (En,Fr,De)
-      @"SLES-00377" : @4, // Jonah Lomu Rugby (Europe) (En,De,Es,It)
-      @"SLES-00611" : @4, // Jonah Lomu Rugby (France)
-      @"SLPS-01268" : @4, // Great Rugby Jikkyou '98 - World Cup e no Michi (Japan)
-      @"SLES-01061" : @4, // Kick Off World (Europe) (En,Fr)
-      @"SLES-01327" : @4, // Kick Off World (Europe) (Es,Nl)
-      @"SLES-01062" : @4, // Kick Off World (Germany)
-      @"SLES-01328" : @4, // Kick Off World (Greece)
-      @"SLES-01063" : @4, // Kick Off World Manager (Italy)
-      @"SCES-03922" : @4, // Klonoa - Beach Volleyball (Europe) (En,Fr,De,Es,It)
-      @"SLPS-03433" : @4, // Klonoa Beach Volley - Saikyou Team Ketteisen! (Japan)
-      @"SLUS-01125" : @4, // Kurt Warner's Arena Football Unleashed (USA)
-      @"SLPS-00686" : @4, // Love Game's - Wai Wai Tennis (Japan)
-      @"SLES-02272" : @4, // Yeh Yeh Tennis (Europe) (En,Fr,De)
-      @"SLPS-02983" : @4, // Love Game's - Wai Wai Tennis 2 (Japan)
-      @"SLPM-86899" : @4, // Love Game's -  Wai Wai Tennis Plus (Japan)
-      @"SLES-01594" : @4, // Michael Owen's World League Soccer 99 (Europe) (En,Fr,It)
-      @"SLES-02499" : @4, // Midnight in Vegas (Europe) (En,Fr,De) (v1.0) / (v1.1)
-      @"SLUS-00836" : @4, // Vegas Games 2000 (USA)
-      @"SLES-03246" : @4, // Monster Racer (Europe) (En,Fr,De,Es,It,Pt)
-      @"SLES-03813" : @4, // Monte Carlo Games Compendium (Europe) (Disc 1)
-      @"SLES-13813" : @4, // Monte Carlo Games Compendium (Europe) (Disc 2)
-      @"SLES-00945" : @4, // Monopoly (Europe) (En,Fr,De,Es,Nl) (v1.0) / (v1.1)
-      @"SLPS-00741" : @4, // Monopoly (Japan)
-      @"SLES-00310" : @4, // Motor Mash (Europe) (En,Fr,De)
-      @"SCES-03085" : @4, // Ms. Pac-Man Maze Madness (Europe) (En,Fr,De,Es,It)
-      @"SLPS-03000" : @4, // Ms. Pac-Man Maze Madness (Japan)
-      @"SLUS-01018" : @4, // Ms. Pac-Man Maze Madness (USA) (v1.0) / (v1.1)
-      @"SLES-02224" : @4, // Music 2000 (Europe) (En,Fr,De,Es,It)
-      @"SLUS-01006" : @4, // MTV Music Generator (USA)
-      @"SLES-00999" : @4, // Nagano Winter Olympics '98 (Europe)
-      @"SLPM-86056" : @4, // Hyper Olympic in Nagano (Japan)
-      @"SLUS-00591" : @4, // Nagano Winter Olympics '98 (USA)
-      @"SLUS-00329" : @4, // NBA Hangtime (USA)
-      @"SLES-00529" : @4, // NBA Jam Extreme (Europe)
-      @"SLPS-00699" : @4, // NBA Jam Extreme (Japan)
-      @"SLUS-00388" : @4, // NBA Jam Extreme (USA)
-      @"SLES-00068" : @4, // NBA Jam - Tournament Edition (Europe)
-      @"SLPS-00199" : @4, // NBA Jam - Tournament Edition (Japan)
-      @"SLUS-00002" : @4, // NBA Jam - Tournament Edition (USA)
-      @"SLES-02336" : @4, // NBA Showtime - NBA on NBC (Europe)
-      @"SLUS-00948" : @4, // NBA Showtime - NBA on NBC (USA)
-      @"SLES-02689" : @4, // Need for Speed - Porsche 2000 (Europe) (En,De,Sv)
-      @"SLES-02700" : @4, // Need for Speed - Porsche 2000 (Europe) (Fr,Es,It)
-      @"SLUS-01104" : @4, // Need for Speed - Porsche Unleashed (USA)
-      @"SLES-01907" : @4, // V-Rally - Championship Edition 2 (Europe) (En,Fr,De)
-      @"SLPS-02516" : @4, // V-Rally - Championship Edition 2 (Japan)
-      @"SLUS-01003" : @4, // Need for Speed - V-Rally 2 (USA)
-      @"SLES-02335" : @4, // NFL Blitz 2000 (Europe)
-      @"SLUS-00861" : @4, // NFL Blitz 2000 (USA)
-      @"SLUS-01146" : @4, // NFL Blitz 2001 (USA)
-      @"SLUS-00327" : @4, // NHL Open Ice - 2 on 2 Challenge (USA)
-      @"SLES-00113" : @4, // Olympic Soccer (Europe) (En,Fr,De,Es,It)
-      @"SLPS-00523" : @4, // Olympic Soccer (Japan)
-      @"SLUS-00156" : @4, // Olympic Soccer (USA)
-      @"SLPS-03056" : @4, // Oshigoto-shiki Jinsei Game - Mezase Shokugyou King (Japan)
-      @"SLPS-00899" : @4, // Panzer Bandit (Japan)
-      @"SLPM-86016" : @4, // Paro Wars (Japan)
-      @"SLUS-01130" : @4, // Peter Jacobsen's Golden Tee Golf (USA)
-      @"SLES-00201" : @4, // Pitball (Europe) (En,Fr,De,Es,It)
-      @"SLPS-00607" : @4, // Pitball (Japan)
-      @"SLUS-00146" : @4, // Pitball (USA)
-      @"SLUS-01033" : @4, // Polaris SnoCross (USA)
-      @"SLES-02020" : @4, // Pong (Europe) (En,Fr,De,Es,It,Nl)
-      @"SLUS-00889" : @4, // Pong - The Next Level (USA)
-      @"SLES-02808" : @4, // Beach Volleyball (Europe) (En,Fr,De,Es,It)
-      @"SLUS-01196" : @4, // Power Spike - Pro Beach Volleyball (USA)
-      @"SLES-00785" : @4, // Poy Poy (Europe)
-      @"SLPM-86034" : @4, // Poitters' Point (Japan)
-      @"SLUS-00486" : @4, // Poy Poy (USA)
-      @"SLES-01536" : @4, // Poy Poy 2 (Europe)
-      @"SLPM-86061" : @4, // Poitters' Point 2 - Sodom no Inbou
-      @"SLES-01544" : @4, // Premier Manager Ninety Nine (Europe)
-      @"SLES-01864" : @4, // Premier Manager Novanta Nove (Italy)
-      @"SLES-02292" : @4, // Premier Manager 2000 (Europe)
-      @"SLES-02293" : @4, // Canal+ Premier Manager (Europe) (Fr,Es,It)
-      @"SLES-02563" : @4, // Anstoss - Premier Manager (Germany)
-      @"SLES-00738" : @4, // Premier Manager 98 (Europe)
-      @"SLES-01284" : @4, // Premier Manager 98 (Italy)
-      @"SLES-03795" : @4, // Pro Evolution Soccer (Europe) (En,Fr,De)
-      @"SLES-03796" : @4, // Pro Evolution Soccer (Europe) (Es,It)
-      @"SLES-03946" : @4, // Pro Evolution Soccer 2 (Europe) (En,Fr,De)
-      @"SLES-03957" : @4, // Pro Evolution Soccer 2 (Europe) (Es,It)
-      @"SLPM-87056" : @4, // World Soccer Winning Eleven 2002 (Japan)
-      @"SLPM-86868" : @4, // Simple 1500 Series Vol. 69 - The Putter Golf (Japan)
-      @"SLUS-01371" : @4, // Putter Golf (USA)
-      @"SLPS-03114" : @4, // Puyo Puyo Box (Japan)
-      @"SLUS-00757" : @4, // Quake II (USA)
-      @"SLPS-02909" : @4, // Simple 1500 Series Vol. 34 - The Quiz Bangumi (Japan)
-      @"SLPS-03384" : @4, // Nice Price Series Vol. 06 - Quiz de Battle (Japan)
-      @"SLES-03511" : @4, // Rageball (Europe)
-      @"SLUS-01461" : @4, // Rageball (USA)
-      @"SLPM-86272" : @4, // Rakugaki Showtime
-      @"SCES-00408" : @4, // Rally Cross (Europe)
-      @"SIPS-60022" : @4, // Rally Cross (Japan)
-      @"SCUS-94308" : @4, // Rally Cross (USA)
-      @"SLES-01103" : @4, // Rat Attack (Europe) (En,Fr,De,Es,It,Nl)
-      @"SLUS-00656" : @4, // Rat Attack! (USA)
-      @"SLES-00707" : @4, // Risk (Europe) (En,Fr,De,Es)
-      @"SLUS-00616" : @4, // Risk - The Game of Global Domination (USA)
-      @"SLES-02552" : @4, // Road Rash - Jailbreak (Europe) (En,Fr,De)
-      @"SLUS-01053" : @4, // Road Rash - Jailbreak (USA)
-      @"SCES-01630" : @4, // Running Wild (Europe)
-      @"SCUS-94272" : @4, // Running Wild (USA)
-      @"SLES-00217" : @4, // Sampras Extreme Tennis (Europe) (En,Fr,De,Es,It)
-      @"SLPS-00594" : @4, // Sampras Extreme Tennis (Japan)
-      @"SLES-01286" : @4, // S.C.A.R.S. (Europe) (En,Fr,De,Es,It)
-      @"SLUS-00692" : @4, // S.C.A.R.S. (USA)
-      @"SLES-03642" : @4, // Scrabble (Europe) (En,De,Es)
-      @"SLUS-00903" : @4, // Scrabble (USA)
-      @"SLPS-02912" : @4, // SD Gundam - G Generation-F (Japan) (Disc 1)
-      @"SLPS-02913" : @4, // SD Gundam - G Generation-F (Japan) (Disc 2)
-      @"SLPS-02914" : @4, // SD Gundam - G Generation-F (Japan) (Disc 3)
-      @"SLPS-02915" : @4, // SD Gundam - G Generation-F (Japan) (Premium Disc)
-      @"SLPS-03195" : @4, // SD Gundam - G Generation-F.I.F (Japan)
-      @"SLPS-00785" : @4, // SD Gundam - GCentury (Japan) (v1.0) / (v1.1)
-      @"SLPS-01560" : @4, // SD Gundam - GGeneration (Japan) (v1.0) / (v1.1)
-      @"SLPS-01561" : @4, // SD Gundam - GGeneration (Premium Disc) (Japan)
-      @"SLPS-02200" : @4, // SD Gundam - GGeneration-0 (Japan) (Disc 1) (v1.0)
-      @"SLPS-02201" : @4, // SD Gundam - GGeneration-0 (Japan) (Disc 2) (v1.0)
-      @"SLES-03776" : @4, // Sky Sports Football Quiz (Europe)
-      @"SLES-03856" : @4, // Sky Sports Football Quiz - Season 02 (Europe)
-      @"SLES-00076" : @4, // Slam 'n Jam '96 featuring Magic & Kareem (Europe)
-      @"SLPS-00426" : @4, // Magic Johnson to Kareem Abdul-Jabbar no Slam 'n Jam '96 (Japan)
-      @"SLUS-00022" : @4, // Slam 'n Jam '96 featuring Magic & Kareem (USA)
-      @"SLES-02194" : @4, // Sled Storm (Europe) (En,Fr,De,Es)
-      @"SLUS-00955" : @4, // Sled Storm (USA)
-      @"SLES-01972" : @4, // South Park - Chef's Luv Shack (Europe)
-      @"SLUS-00997" : @4, // South Park - Chef's Luv Shack (USA)
-      @"SCES-01763" : @4, // Speed Freaks (Europe)
-      @"SCUS-94563" : @4, // Speed Punks (USA)
-      @"SLES-00023" : @4, // Striker 96 (Europe) (v1.0)
-      @"SLPS-00127" : @4, // Striker - World Cup Premiere Stage (Japan)
-      @"SLUS-00210" : @4, // Striker 96 (USA)
-      @"SLES-01733" : @4, // UEFA Striker (Europe) (En,Fr,De,Es,It,Nl)
-      @"SLUS-01078" : @4, // Striker Pro 2000 (USA)
-      @"SLPS-01264" : @4, // Suchie-Pai Adventure - Doki Doki Nightmare (Japan) (Disc 1)
-      @"SLPS-01265" : @4, // Suchie-Pai Adventure - Doki Doki Nightmare (Japan) (Disc 2)
-      @"SLES-00213" : @4, // Syndicate Wars (Europe) (En,Fr,Es,It,Sv)
-      @"SLES-00212" : @4, // Syndicate Wars (Germany)
-      @"SLUS-00262" : @4, // Syndicate Wars (USA)
-      @"SLPS-03050" : @4, // Tales of Eternia (Japan) (Disc 1)
-      @"SLPS-03051" : @4, // Tales of Eternia (Japan) (Disc 2)
-      @"SLPS-03052" : @4, // Tales of Eternia (Japan) (Disc 3)
-      @"SLUS-01355" : @4, // Tales of Destiny II (USA) (Disc 1)
-      @"SLUS-01367" : @4, // Tales of Destiny II (USA) (Disc 2)
-      @"SLUS-01368" : @4, // Tales of Destiny II (USA) (Disc 3)
-      @"SCES-01923" : @4, // Team Buddies (Europe) (En,Fr,De)
-      @"SLUS-00869" : @4, // Team Buddies (USA)
-      @"SLPS-00321" : @4, // Tetris X (Japan)
-      @"SLES-01675" : @4, // Tiger Woods 99 USA Tour Golf (Australia)
-      @"SLES-01674" : @4, // Tiger Woods 99 PGA Tour Golf (Europe) (En,Fr,De,Es,Sv)
-      @"SLPS-02012" : @4, // Tiger Woods 99 PGA Tour Golf (Japan)
-      @"SLUS-00785" : @4, // Tiger Woods 99 PGA Tour Golf (USA) (v1.0) / (v1.1)
-      @"SLES-03148" : @4, // Tiger Woods PGA Tour Golf (Europe)
-      @"SLUS-01273" : @4, // Tiger Woods PGA Tour Golf (USA)
-      @"SLES-02595" : @4, // Tiger Woods USA Tour 2000 (Australia)
-      @"SLES-02551" : @4, // Tiger Woods PGA Tour 2000 (Europe) (En,Fr,De,Es,Sv)
-      @"SLUS-01054" : @4, // Tiger Woods PGA Tour 2000 (USA)
-      @"SLPS-01113" : @4, // Toshinden Card Quest (Japan)
-      @"SLES-00256" : @4, // Trash It (Europe) (En,Fr,De,Es,It)
-      @"SCUS-94249" : @4, // Twisted Metal III (USA) (v1.0) / (v1.1)
-      @"SCUS-94560" : @4, // Twisted Metal 4 (USA)
-      @"SLES-02806" : @4, // UEFA Challenge (Europe) (En,Fr,De,Nl)
-      @"SLES-02807" : @4, // UEFA Challenge (Europe) (Fr,Es,It,Pt)
-      @"SLES-01622" : @4, // UEFA Champions League - Season 1998-99 (Europe)
-      @"SLES-01745" : @4, // UEFA Champions League - Saison 1998-99 (Germany)
-      @"SLES-01746" : @4, // UEFA Champions League - Stagione 1998-99 (Italy)
-      @"SLES-02918" : @4, // Vegas Casino (Europe)
-      @"SLPS-00467" : @4, // Super Casino Special (Japan)
-      @"SLES-00761" : @4, // Viva Football (Europe) (En,Fr,De,Es,It,Pt)
-      @"SLES-01341" : @4, // Absolute Football (France) (En,Fr,De,Es,It,Pt)
-      @"SLUS-00953" : @4, // Viva Soccer (USA) (En,Fr,De,Es,It,Pt)
-      @"SLES-02193" : @4, // WCW Mayhem (Europe)
-      @"SLUS-00963" : @4, // WCW Mayhem (USA)
-      @"SLES-03806" : @4, // Westlife - Fan-O-Mania (Europe)
-      @"SLES-03779" : @4, // Westlife - Fan-O-Mania (Europe) (Fr,De)
-      @"SLES-00717" : @4, // World League Soccer '98 (Europe) (En,Es,It)
-      @"SLES-01166" : @4, // World League Soccer '98 (France)
-      @"SLES-01167" : @4, // World League Soccer '98 (Germany)
-      @"SLPS-01389" : @4, // World League Soccer (Japan)
-      @"SLES-02170" : @4, // Wu-Tang - Taste the Pain (Europe)
-      @"SLES-02171" : @4, // Wu-Tang - Shaolin Style (France)
-      @"SLES-02172" : @4, // Wu-Tang - Shaolin Style (Germany)
-      @"SLUS-00929" : @4, // Wu-Tang - Shaolin Style (USA)
-      @"SLES-01980" : @4, // WWF Attitude (Europe)
-      @"SLES-02255" : @4, // WWF Attitude (Germany)
-      @"SLUS-00831" : @4, // WWF Attitude (USA)
-      @"SLES-00286" : @4, // WWF In Your House (Europe)
-      @"SLPS-00695" : @4, // WWF In Your House (Japan)
-      @"SLUS-00246" : @4, // WWF In Your House (USA) (v1.0) / (v1.1)
-      @"SLES-02619" : @4, // WWF SmackDown! (Europe)
-      @"SLPS-02885" : @4, // Exciting Pro Wres (Japan)
-      @"SLUS-00927" : @4, // WWF SmackDown! (USA)
-      @"SLES-03251" : @4, // WWF SmackDown! 2 - Know Your Role (Europe)
-      @"SLPS-03122" : @4, // Exciting Pro Wres 2 (Japan)
-      @"SLUS-01234" : @4, // WWF SmackDown! 2 - Know Your Role (USA)
-      @"SLES-00804" : @4, // WWF War Zone (Europe)
-      @"SLUS-00495" : @4, // WWF War Zone (USA) (v1.0) / (v1.1)
-      @"SLES-01893" : @5, // Bomberman (Europe)
-      @"SLPS-01717" : @5, // Bomberman (Japan)
-      @"SLUS-01189" : @5, // Bomberman - Party Edition (USA)
-      @"SCES-01078" : @5, // Bomberman World (Europe) (En,Fr,De,Es,It)
-      @"SLPS-01155" : @5, // Bomberman World (Japan)
-      @"SLUS-00680" : @5, // Bomberman World (USA)
-      @"SCES-01312" : @5, // Devil Dice (Europe) (En,Fr,De,Es,It)
-      @"SCPS-10051" : @5, // XI [sai] (Japan) (En,Ja)
-      @"SLUS-00672" : @5, // Devil Dice (USA)
-      @"SLPS-02943" : @5, // DX Monopoly (Japan)
-      @"SLES-00865" : @5, // Overboard! (Europe)
-      @"SLUS-00558" : @5, // Shipwreckers! (USA)
-      @"SLES-01376" : @6, // Brunswick Circuit Pro Bowling (Europe)
-      @"SLUS-00571" : @6, // Brunswick Circuit Pro Bowling (USA)
-      @"SLUS-00769" : @6, // Game of Life, The (USA)
-      @"SLES-03362" : @6, // NBA Hoopz (Europe) (En,Fr,De)
-      @"SLUS-01331" : @6, // NBA Hoopz (USA)
-      @"SLES-00284" : @6, // Space Jam (Europe)
-      @"SLPS-00697" : @6, // Space Jam (Japan)
-      @"SLUS-00243" : @6, // Space Jam (USA)
-      @"SLES-00534" : @6, // Ten Pin Alley (Europe)
-      @"SLUS-00377" : @6, // Ten Pin Alley (USA)
-      @"SLPS-01243" : @6, // Tenant Wars (Japan)
-      @"SLPM-86240" : @6, // SuperLite 1500 Series - Tenant Wars Alpha - SuperLite 1500 Version (Japan)
-      @"SLUS-01333" : @6, // Board Game - Top Shop (USA)
-      @"SLES-03830" : @8, // 2002 FIFA World Cup Korea Japan (Europe) (En,Sv)
-      @"SLES-03831" : @8, // Coupe du Monde FIFA 2002 (France)
-      @"SLES-03832" : @8, // 2002 FIFA World Cup Korea Japan (Germany)
-      @"SLES-03833" : @8, // 2002 FIFA World Cup Korea Japan (Italy)
-      @"SLES-03834" : @8, // 2002 FIFA World Cup Korea Japan (Spain)
-      @"SLUS-01449" : @8, // 2002 FIFA World Cup (USA) (En,Es)
-      @"SLES-01210" : @8, // Actua Soccer 3 (Europe)
-      @"SLES-01644" : @8, // Actua Soccer 3 (France)
-      @"SLES-01645" : @8, // Actua Soccer 3 (Germany)
-      @"SLES-01646" : @8, // Actua Soccer 3 (Italy)
-      @"SLPM-86044" : @8, // Break Point (Japan)
-      @"SCUS-94156" : @8, // Cardinal Syn (USA)
-      @"SLES-02948" : @8, // Chris Kamara's Street Soccer (Europe)
-      @"SLES-00080" : @8, // Supersonic Racers (Europe) (En,Fr,De,Es,It)
-      @"SLPS-01025" : @8, // Dare Devil Derby 3D (Japan)
-      @"SLUS-00300" : @8, // Dare Devil Derby 3D (USA)
-      @"SLES-00116" : @8, // FIFA Soccer 96 (Europe) (En,Fr,De,Es,It,Sv)
-      @"SLUS-00038" : @8, // FIFA Soccer 96 (USA)
-      @"SLES-00504" : @8, // FIFA 97 (Europe) (En,Fr,De,Es,It,Sv)
-      @"SLES-00505" : @8, // FIFA 97 (France) (En,Fr,De,Es,It,Sv)
-      @"SLES-00506" : @8, // FIFA 97 (Germany) (En,Fr,De,Es,It,Sv)
-      @"SLPS-00878" : @8, // FIFA Soccer 97 (Japan)
-      @"SLUS-00269" : @8, // FIFA Soccer 97 (USA)
-      @"SLES-00914" : @8, // FIFA - Road to World Cup 98 (Europe) (En,Fr,De,Es,Nl,Sv)
-      @"SLES-00915" : @8, // FIFA - En Route pour la Coupe du Monde 98 (France) (En,Fr,De,Es,Nl,Sv)
-      @"SLES-00916" : @8, // FIFA - Die WM-Qualifikation 98 (Germany) (En,Fr,De,Es,Nl,Sv)
-      @"SLES-00917" : @8, // FIFA - Road to World Cup 98 (Italy)
-      @"SLPS-01383" : @8, // FIFA - Road to World Cup 98 (Japan)
-      @"SLES-00918" : @8, // FIFA - Rumbo al Mundial 98 (Spain) (En,Fr,De,Es,Nl,Sv)
-      @"SLUS-00520" : @8, // FIFA - Road to World Cup 98 (USA) (En,Fr,De,Es,Nl,Sv)
-      @"SLES-01584" : @8, // FIFA 99 (Europe) (En,Fr,De,Es,Nl,Sv)
-      @"SLES-01585" : @8, // FIFA 99 (France) (En,Fr,De,Es,Nl,Sv)
-      @"SLES-01586" : @8, // FIFA 99 (Germany) (En,Fr,De,Es,Nl,Sv)
-      @"SLES-01587" : @8, // FIFA 99 (Italy)
-      @"SLPS-02309" : @8, // FIFA 99 - Europe League Soccer (Japan)
-      @"SLES-01588" : @8, // FIFA 99 (Spain) (En,Fr,De,Es,Nl,Sv)
-      @"SLUS-00782" : @8, // FIFA 99 (USA)
-      @"SLES-02315" : @8, // FIFA 2000 (Europe) (En,De,Es,Nl,Sv) (v1.0) / (v1.1)
-      @"SLES-02316" : @8, // FIFA 2000 (France)
-      @"SLES-02317" : @8, // FIFA 2000 (Germany) (En,De,Es,Nl,Sv)
-      @"SLES-02320" : @8, // FIFA 2000 (Greece)
-      @"SLES-02319" : @8, // FIFA 2000 (Italy)
-      @"SLPS-02675" : @8, // FIFA 2000 - Europe League Soccer (Japan)
-      @"SLES-02318" : @8, // FIFA 2000 (Spain) (En,De,Es,Nl,Sv)
-      @"SLUS-00994" : @8, // FIFA 2000 - Major League Soccer (USA) (En,De,Es,Nl,Sv)
-      @"SLES-03140" : @8, // FIFA 2001 (Europe) (En,De,Es,Nl,Sv)
-      @"SLES-03141" : @8, // FIFA 2001 (France)
-      @"SLES-03142" : @8, // FIFA 2001 (Germany) (En,De,Es,Nl,Sv)
-      @"SLES-03143" : @8, // FIFA 2001 (Greece)
-      @"SLES-03145" : @8, // FIFA 2001 (Italy)
-      @"SLES-03146" : @8, // FIFA 2001 (Spain) (En,De,Es,Nl,Sv)
-      @"SLUS-01262" : @8, // FIFA 2001 (USA)
-      @"SLES-03666" : @8, // FIFA Football 2002 (Europe) (En,De,Es,Nl,Sv)
-      @"SLES-03668" : @8, // FIFA Football 2002 (France)
-      @"SLES-03669" : @8, // FIFA Football 2002 (Germany) (En,De,Es,Nl,Sv)
-      @"SLES-03671" : @8, // FIFA Football 2002 (Italy)
-      @"SLES-03672" : @8, // FIFA Football 2002 (Spain) (En,De,Es,Nl,Sv)
-      @"SLUS-01408" : @8, // FIFA Soccer 2002 (USA) (En,Es)
-      @"SLES-03977" : @8, // FIFA Football 2003 (Europe) (En,Nl,Sv)
-      @"SLES-03978" : @8, // FIFA Football 2003 (France)
-      @"SLES-03979" : @8, // FIFA Football 2003 (Germany)
-      @"SLES-03980" : @8, // FIFA Football 2003 (Italy)
-      @"SLES-03981" : @8, // FIFA Football 2003 (Spain)
-      @"SLUS-01504" : @8, // FIFA Soccer 2003 (USA)
-      @"SLES-04115" : @8, // FIFA Football 2004 (Europe) (En,Nl,Sv)
-      @"SLES-04116" : @8, // FIFA Football 2004 (France)
-      @"SLES-04117" : @8, // FIFA Football 2004 (Germany)
-      @"SLES-04119" : @8, // FIFA Football 2004 (Italy)
-      @"SLES-04118" : @8, // FIFA Football 2004 (Spain)
-      @"SLUS-01578" : @8, // FIFA Soccer 2004 (USA) (En,Es)
-      @"SLES-04165" : @8, // FIFA Football 2005 (Europe) (En,Nl)
-      @"SLES-04166" : @8, // FIFA Football 2005 (France)
-      @"SLES-04168" : @8, // FIFA Football 2005 (Germany)
-      @"SLES-04167" : @8, // FIFA Football 2005 (Italy)
-      @"SLES-04169" : @8, // FIFA Football 2005 (Spain)
-      @"SLUS-01585" : @8, // FIFA Soccer 2005 (USA) (En,Es)
-      @"SLUS-01129" : @8, // FoxKids.com - Micro Maniacs Racing (USA)
-      @"SLES-03084" : @8, // Inspector Gadget - Gadget's Crazy Maze (Europe) (En,Fr,De,Es,It,Nl)
-      @"SLUS-01267" : @8, // Inspector Gadget - Gadget's Crazy Maze (USA) (En,Fr,De,Es,It,Nl)
-      @"SLUS-00500" : @8, // Jimmy Johnson's VR Football '98 (USA)
-      @"SLES-00436" : @8, // Madden NFL 97 (Europe)
-      @"SLUS-00018" : @8, // Madden NFL 97 (USA)
-      @"SLES-00904" : @8, // Madden NFL 98 (Europe)
-      @"SLUS-00516" : @8, // Madden NFL 98 (USA) / (Alt)
-      @"SLES-01427" : @8, // Madden NFL 99 (Europe)
-      @"SLUS-00729" : @8, // Madden NFL 99 (USA)
-      @"SLES-02192" : @8, // Madden NFL 2000 (Europe)
-      @"SLUS-00961" : @8, // Madden NFL 2000 (USA)
-      @"SLES-03067" : @8, // Madden NFL 2001 (Europe)
-      @"SLUS-01241" : @8, // Madden NFL 2001 (USA)
-      @"SLUS-01402" : @8, // Madden NFL 2002 (USA)
-      @"SLUS-01482" : @8, // Madden NFL 2003 (USA)
-      @"SLUS-01570" : @8, // Madden NFL 2004 (USA)
-      @"SLUS-01584" : @8, // Madden NFL 2005 (USA)
-      @"SLUS-00526" : @8, // March Madness '98 (USA)
-      @"SLUS-00559" : @8, // Micro Machines V3 (USA)
-      @"SLUS-00507" : @8, // Monopoly (USA)
-      @"SLUS-01178" : @8, // Monster Rancher Battle Card - Episode II (USA)
-      @"SLES-02299" : @8, // NBA Basketball 2000 (Europe) (En,Fr,De,Es,It)
-      @"SLUS-00926" : @8, // NBA Basketball 2000 (USA)
-      @"SLES-01003" : @8, // NBA Fastbreak '98 (Europe)
-      @"SLUS-00492" : @8, // NBA Fastbreak '98 (USA)
-      @"SLES-00171" : @8, // NBA in the Zone (Europe)
-      @"SLPS-00188" : @8, // NBA Power Dunkers (Japan)
-      @"SLUS-00048" : @8, // NBA in the Zone (USA)
-      @"SLES-00560" : @8, // NBA in the Zone 2 (Europe)
-      @"SLPM-86011" : @8, // NBA Power Dunkers 2 (Japan)
-      @"SLUS-00294" : @8, // NBA in the Zone 2 (USA)
-      @"SLES-00882" : @8, // NBA Pro 98 (Europe)
-      @"SLPM-86060" : @8, // NBA Power Dunkers 3 (Japan)
-      @"SLUS-00445" : @8, // NBA in the Zone '98 (USA) (v1.0) / (v1.1)
-      @"SLES-01970" : @8, // NBA Pro 99 (Europe)
-      @"SLPM-86176" : @8, // NBA Power Dunkers 4 (Japan)
-      @"SLUS-00791" : @8, // NBA in the Zone '99 (USA)
-      @"SLES-02513" : @8, // NBA in the Zone 2000 (Europe)
-      @"SLPM-86397" : @8, // NBA Power Dunkers 5 (Japan)
-      @"SLUS-01028" : @8, // NBA in the Zone 2000 (USA)
-      @"SLES-00225" : @8, // NBA Live 96 (Europe)
-      @"SLPS-00389" : @8, // NBA Live 96 (Japan)
-      @"SLUS-00060" : @8, // NBA Live 96 (USA)
-      @"SLES-00517" : @8, // NBA Live 97 (Europe) (En,Fr,De)
-      @"SLPS-00736" : @8, // NBA Live 97 (Japan)
-      @"SLUS-00267" : @8, // NBA Live 97 (USA)
-      @"SLES-00906" : @8, // NBA Live 98 (Europe) (En,Es,It)
-      @"SLES-00952" : @8, // NBA Live 98 (Germany)
-      @"SLPS-01296" : @8, // NBA Live 98 (Japan)
-      @"SLUS-00523" : @8, // NBA Live 98 (USA)
-      @"SLES-01446" : @8, // NBA Live 99 (Europe)
-      @"SLES-01455" : @8, // NBA Live 99 (Germany)
-      @"SLES-01456" : @8, // NBA Live 99 (Italy)
-      @"SLPS-02033" : @8, // NBA Live 99 (Japan)
-      @"SLES-01457" : @8, // NBA Live 99 (Spain)
-      @"SLUS-00736" : @8, // NBA Live 99 (USA)
-      @"SLES-02358" : @8, // NBA Live 2000 (Europe)
-      @"SLES-02360" : @8, // NBA Live 2000 (Germany)
-      @"SLES-02361" : @8, // NBA Live 2000 (Italy)
-      @"SLPS-02603" : @8, // NBA Live 2000 (Japan)
-      @"SLES-02362" : @8, // NBA Live 2000 (Spain)
-      @"SLUS-00998" : @8, // NBA Live 2000 (USA)
-      @"SLES-03128" : @8, // NBA Live 2001 (Europe)
-      @"SLES-03129" : @8, // NBA Live 2001 (France)
-      @"SLES-03130" : @8, // NBA Live 2001 (Germany)
-      @"SLES-03131" : @8, // NBA Live 2001 (Italy)
-      @"SLES-03132" : @8, // NBA Live 2001 (Spain)
-      @"SLUS-01271" : @8, // NBA Live 2001 (USA)
-      @"SLES-03718" : @8, // NBA Live 2002 (Europe)
-      @"SLES-03719" : @8, // NBA Live 2002 (France)
-      @"SLES-03720" : @8, // NBA Live 2002 (Germany)
-      @"SLES-03721" : @8, // NBA Live 2002 (Italy)
-      @"SLES-03722" : @8, // NBA Live 2002 (Spain)
-      @"SLUS-01416" : @8, // NBA Live 2002 (USA)
-      @"SLES-03982" : @8, // NBA Live 2003 (Europe)
-      @"SLES-03969" : @8, // NBA Live 2003 (France)
-      @"SLES-03968" : @8, // NBA Live 2003 (Germany)
-      @"SLES-03970" : @8, // NBA Live 2003 (Italy)
-      @"SLES-03971" : @8, // NBA Live 2003 (Spain)
-      @"SLUS-01483" : @8, // NBA Live 2003 (USA)
-      @"SCES-00067" : @8, // Total NBA '96 (Europe)
-      @"SIPS-60008" : @8, // Total NBA '96 (Japan)
-      @"SCUS-94500" : @8, // NBA Shoot Out (USA)
-      @"SCES-00623" : @8, // Total NBA '97 (Europe)
-      @"SIPS-60015" : @8, // Total NBA '97 (Japan)
-      @"SCUS-94552" : @8, // NBA Shoot Out '97 (USA)
-      @"SCES-01079" : @8, // Total NBA 98 (Europe)
-      @"SCUS-94171" : @8, // NBA ShootOut 98 (USA)
-      @"SCUS-94561" : @8, // NBA ShootOut 2000 (USA)
-      @"SCUS-94581" : @8, // NBA ShootOut 2001 (USA)
-      @"SCUS-94641" : @8, // NBA ShootOut 2002 (USA)
-      @"SCUS-94673" : @8, // NBA ShootOut 2003 (USA)
-      @"SCUS-94691" : @8, // NBA ShootOut 2004 (USA)
-      @"SLUS-00142" : @8, // NCAA Basketball Final Four 97 (USA)
-      @"SCUS-94264" : @8, // NCAA Final Four 99 (USA)
-      @"SCUS-94562" : @8, // NCAA Final Four 2000 (USA)
-      @"SCUS-94579" : @8, // NCAA Final Four 2001 (USA)
-      @"SLUS-00514" : @8, // NCAA Football 98 (USA)
-      @"SLUS-00688" : @8, // NCAA Football 99 (USA)
-      @"SLUS-00932" : @8, // NCAA Football 2000 (USA) (v1.0) / (v1.1)
-      @"SLUS-01219" : @8, // NCAA Football 2001 (USA)
-      @"SCUS-94509" : @8, // NCAA Football GameBreaker (USA)
-      @"SCUS-94172" : @8, // NCAA GameBreaker 98 (USA)
-      @"SCUS-94246" : @8, // NCAA GameBreaker 99 (USA)
-      @"SCUS-94557" : @8, // NCAA GameBreaker 2000 (USA)
-      @"SCUS-94573" : @8, // NCAA GameBreaker 2001 (USA)
-      @"SLUS-00805" : @8, // NCAA March Madness 99 (USA)
-      @"SLUS-01023" : @8, // NCAA March Madness 2000 (USA)
-      @"SLUS-01320" : @8, // NCAA March Madness 2001 (USA)
-      @"SCES-00219" : @8, // NFL GameDay (Europe)
-      @"SCUS-94505" : @8, // NFL GameDay (USA)
-      @"SCUS-94510" : @8, // NFL GameDay 97 (USA)
-      @"SCUS-94173" : @8, // NFL GameDay 98 (USA)
-      @"SCUS-94234" : @8, // NFL GameDay 99 (USA) (v1.0) / (v1.1)
-      @"SCUS-94556" : @8, // NFL GameDay 2000 (USA)
-      @"SCUS-94575" : @8, // NFL GameDay 2001 (USA)
-      @"SCUS-94639" : @8, // NFL GameDay 2002 (USA)
-      @"SCUS-94665" : @8, // NFL GameDay 2003 (USA)
-      @"SCUS-94690" : @8, // NFL GameDay 2004 (USA)
-      @"SCUS-94695" : @8, // NFL GameDay 2005 (USA)
-      @"SLES-00449" : @8, // NFL Quarterback Club 97 (Europe)
-      @"SLUS-00011" : @8, // NFL Quarterback Club 97 (USA)
-      @"SCUS-94420" : @8, // NFL Xtreme 2 (USA)
-      @"SLES-00492" : @8, // NHL 97 (Europe)
-      @"SLES-00533" : @8, // NHL 97 (Germany)
-      @"SLPS-00861" : @8, // NHL 97 (Japan)
-      @"SLUS-00030" : @8, // NHL 97 (USA)
-      @"SLES-00907" : @8, // NHL 98 (Europe) (En,Sv,Fi)
-      @"SLES-00512" : @8, // NHL 98 (Germany)
-      @"SLUS-00519" : @8, // NHL 98 (USA)
-      @"SLES-01445" : @8, // NHL 99 (Europe) (En,Fr,Sv,Fi)
-      @"SLES-01458" : @8, // NHL 99 (Germany)
-      @"SLUS-00735" : @8, // NHL 99 (USA)
-      @"SLES-02225" : @8, // NHL 2000 (Europe) (En,Sv,Fi)
-      @"SLES-02227" : @8, // NHL 2000 (Germany)
-      @"SLUS-00965" : @8, // NHL 2000 (USA)
-      @"SLES-03139" : @8, // NHL 2001 (Europe) (En,Sv,Fi)
-      @"SLES-03154" : @8, // NHL 2001 (Germany)
-      @"SLUS-01264" : @8, // NHL 2001 (USA)
-      @"SLES-02514" : @8, // NHL Blades of Steel 2000 (Europe)
-      @"SLPM-86193" : @8, // NHL Blades of Steel 2000 (Japan)
-      @"SLUS-00825" : @8, // NHL Blades of Steel 2000 (USA)
-      @"SLES-00624" : @8, // NHL Breakaway 98 (Europe)
-      @"SLUS-00391" : @8, // NHL Breakaway 98 (USA)
-      @"SLES-02298" : @8, // NHL Championship 2000 (Europe) (En,Fr,De,Sv)
-      @"SLUS-00925" : @8, // NHL Championship 2000 (USA)
-      @"SCES-00392" : @8, // NHL Face Off '97 (Europe)
-      @"SIPS-60018" : @8, // NHL PowerRink '97 (Japan)
-      @"SCUS-94550" : @8, // NHL Face Off '97 (USA)
-      @"SCES-01022" : @8, // NHL FaceOff 98 (Europe)
-      @"SCUS-94174" : @8, // NHL FaceOff 98 (USA)
-      @"SCES-01736" : @8, // NHL FaceOff 99 (Europe)
-      @"SCUS-94235" : @8, // NHL FaceOff 99 (USA)
-      @"SCES-02451" : @8, // NHL FaceOff 2000 (Europe)
-      @"SCUS-94558" : @8, // NHL FaceOff 2000 (USA)
-      @"SCUS-94577" : @8, // NHL FaceOff 2001 (USA)
-      @"SLES-00418" : @8, // NHL Powerplay 98 (Europe) (En,Fr,De)
-      @"SLUS-00528" : @8, // NHL Powerplay 98 (USA) (En,Fr,De)
-      @"SLES-00110" : @8, // Olympic Games (Europe) (En,Fr,De,Es,It)
-      @"SLPS-00465" : @8, // Atlanta Olympics '96
-      @"SLUS-00148" : @8, // Olympic Summer Games (USA)
-      @"SLES-01559" : @8, // Pro 18 - World Tour Golf (Europe) (En,Fr,De,Es,It,Sv)
-      @"SLUS-00817" : @8, // Pro 18 - World Tour Golf (USA)
-      @"SLES-00472" : @8, // Riot (Europe)
-      @"SCUS-94551" : @8, // Professional Underground League of Pain (USA)
-      @"SLES-01203" : @8, // Puma Street Soccer (Europe) (En,Fr,De,It)
-      @"SLES-01436" : @8, // Rival Schools - United by Fate (Europe) (Disc 1) (Evolution Disc)
-      @"SLES-11436" : @8, // Rival Schools - United by Fate (Europe) (Disc 2) (Arcade Disc)
-      @"SLPS-01240" : @8, // Shiritsu Justice Gakuen - Legion of Heroes (Japan) (Disc 1) (Evolution Disc)
-      @"SLPS-01241" : @8, // Shiritsu Justice Gakuen - Legion of Heroes (Japan) (Disc 2) (Arcade Disc)
-      @"SLPS-02120" : @8, // Shiritsu Justice Gakuen - Nekketsu Seishun Nikki 2 (Japan)
-      @"SLES-01658" : @8, // Shaolin (Europe)
-      @"SLPS-02168" : @8, // Lord of Fist (Japan)
-      @"SLES-00296" : @8, // Street Racer (Europe)
-      @"SLPS-00610" : @8, // Street Racer Extra (Japan)
-      @"SLUS-00099" : @8, // Street Racer (USA)
-      @"SLES-02857" : @8, // Sydney 2000 (Europe)
-      @"SLES-02858" : @8, // Sydney 2000 (France)
-      @"SLES-02859" : @8, // Sydney 2000 (Germany)
-      @"SLPM-86626" : @8, // Sydney 2000 (Japan)
-      @"SLES-02861" : @8, // Sydney 2000 (Spain)
-      @"SLUS-01177" : @8, // Sydney 2000 (USA)
-      @"SCES-01700" : @8, // This Is Football (Europe)
-      @"SCES-01882" : @8, // This Is Football (Europe) (Fr,Nl)
-      @"SCES-01701" : @8, // Monde des Bleus, Le - Le jeu officiel de l'equipe de France (France)
-      @"SCES-01702" : @8, // Fussball Live (Germany)
-      @"SCES-01703" : @8, // This Is Football (Italy)
-      @"SCES-01704" : @8, // Esto es Futbol (Spain)
-      @"SCES-03070" : @8, // This Is Football 2 (Europe)
-      @"SCES-03073" : @8, // Monde des Bleus 2, Le (France)
-      @"SCES-03074" : @8, // Fussball Live 2 (Germany)
-      @"SCES-03075" : @8, // This Is Football 2 (Italy)
-      @"SCES-03072" : @8, // This Is Football 2 (Netherlands)
-      @"SCES-03076" : @8, // Esto es Futbol 2 (Spain)
-      @"SLPS-00682" : @8, // Triple Play 97 (Japan)
-      @"SLUS-00237" : @8, // Triple Play 97 (USA)
-      @"SLPS-00887" : @8, // Triple Play 98 (Japan)
-      @"SLUS-00465" : @8, // Triple Play 98 (USA)
-      @"SLUS-00618" : @8, // Triple Play 99 (USA) (En,Es)
-      @"SLES-02577" : @8, // UEFA Champions League - Season 1999-2000 (Europe)
-      @"SLES-02578" : @8, // UEFA Champions League - Season 1999-2000 (France)
-      @"SLES-02579" : @8, // UEFA Champions League - Season 1999-2000 (Germany)
-      @"SLES-02580" : @8, // UEFA Champions League - Season 1999-2000 (Italy)
-      @"SLES-03262" : @8, // UEFA Champions League - Season 2000-2001 (Europe)
-      @"SLES-03281" : @8, // UEFA Champions League - Season 2000-2001 (Germany)
-      @"SLES-02704" : @8, // UEFA Euro 2000 (Europe)
-      @"SLES-02705" : @8, // UEFA Euro 2000 (France)
-      @"SLES-02706" : @8, // UEFA Euro 2000 (Germany)
-      @"SLES-02707" : @8, // UEFA Euro 2000 (Italy)
-      @"SLES-01265" : @8, // World Cup 98 (Europe) (En,Fr,De,Es,Nl,Sv,Da)
-      @"SLES-01266" : @8, // Coupe du Monde 98 (France)
-      @"SLES-01267" : @8, // Frankreich 98 - Die Fussball-WM (Germany) (En,Fr,De,Es,Nl,Sv,Da)
-      @"SLES-01268" : @8, // World Cup 98 - Coppa del Mondo (Italy)
-      @"SLPS-01719" : @8, // FIFA World Cup 98 - France 98 Soushuuhen (Japan)
-      @"SLUS-00644" : @8, // World Cup 98 (USA)
-      };
 
-    // 5-player games requiring Multitap on port 2 instead of port 1
-    NSArray *multiTap5PlayerPort2 =
-    @[
-      @"SLES-01893", // Bomberman (Europe)
-      @"SLPS-01717", // Bomberman (Japan)
-      @"SLUS-01189", // Bomberman - Party Edition (USA)
-      ];
 
-#pragma message "forget about multitap for now :)"
-    // Set multitap configuration if detected
-//    if (multiTapGames[[current ROMSerial]])
-//    {
-//        current->multiTapPlayerCount = [[multiTapGames objectForKey:[current ROMSerial]] intValue];
-//
-//        if([multiTap5PlayerPort2 containsObject:[current ROMSerial]])
-//            MDFNI_SetSetting("psx.input.pport2.multitap", "1"); // Enable multitap on PSX port 2
-//        else
-//        {
-//            MDFNI_SetSetting("psx.input.pport1.multitap", "1"); // Enable multitap on PSX port 1
-//            if(current->multiTapPlayerCount > 5)
-//                MDFNI_SetSetting("psx.input.pport2.multitap", "1"); // Enable multitap on PSX port 2
-//        }
-//    }
+	// NES Settings
+
+	MDFNI_SetSettingUI("nes.clipsides", 1); // Clip left+right 8 pixel columns. 0 default
+	MDFNI_SetSettingB("nes.correct_aspect", true); // Correct the aspect ratio. 0 default
+
+
+	// PSX Settings
+	MDFNI_SetSettingB("psx.h_overscan", true); // Show horizontal overscan area. 1 default
+	MDFNI_SetSetting("psx.region_default", "na"); // Set default region to North America if auto detect fails, default: jp
+
+	MDFNI_SetSettingB("psx.input.analog_mode_ct", true); // Enable Analog mode toggle
+		/*
+		 0x0001=SELECT
+		 0x0002=L3
+		 0x0004=R3
+		 0x0008=START
+		 0x0010=D-Pad UP
+		 0x0020=D-Pad Right
+		 0x0040=D-Pad Down
+		 0x0080=D-Pad Left
+		 0x0100=L2
+		 0x0200=R2
+		 0x0400=L1
+		 0x0800=R1
+		 0x1000=△
+		 0x2000=○
+		 0x4000=x
+		 0x8000=□
+		 */
+	// The buttons to press to toggle analog / digital mode (hold for couple seconds)
+	uint64 amct = ((1 << PSXMap[PVPSXButtonCircle]) |
+				   (1 << PSXMap[PVPSXButtonL1]) |
+                   (1 << PSXMap[PVPSXButtonL2]) |
+                   (1 << PSXMap[PVPSXButtonR1]) |
+				   (1 << PSXMap[PVPSXButtonR2]));
+	MDFNI_SetSettingUI("psx.input.analog_mode_ct.compare", amct);
+
+	// PCE Settings
+//	MDFNI_SetSetting("pce.disable_softreset", "1"); // PCE: To prevent soft resets due to accidentally hitting RUN and SEL at the same time.
+//	MDFNI_SetSetting("pce.adpcmextraprec", "1"); // PCE: Enabling this option causes the MSM5205 ADPCM predictor to be outputted with full precision of 12-bits,
+//												 // rather than only outputting 10-bits of precision(as an actual MSM5205 does).
+//												 // Enable this option to reduce whining noise during ADPCM playback.
+//    MDFNI_SetSetting("pce.slstart", "4"); // PCE: First rendered scanline 4 default
+//    MDFNI_SetSetting("pce.slend", "235"); // PCE: Last rendered scanline 235 default, 239max
+
+	// PCE_Fast settings
+
+	MDFNI_SetSetting("pce_fast.cdspeed", "4"); // PCE: CD-ROM data transfer speed multiplier. Default is 1
+	MDFNI_SetSetting("pce_fast.disable_softreset", "1"); // PCE: To prevent soft resets due to accidentally hitting RUN and SEL at the same time
+//	MDFNI_SetSetting("pce_fast.slstart", "4"); // PCE: First rendered scanline
+//	MDFNI_SetSetting("pce_fast.slend", "235"); // PCE: Last rendered scanline
+
+	// PC-FX Settings
+	MDFNI_SetSetting("pcfx.cdspeed", "8"); // PCFX: Emulated CD-ROM speed. Setting the value higher than 2, the default, will decrease loading times in most games by some degree.
+//	MDFNI_SetSetting("pcfx.input.port1.multitap", "1"); // PCFX: EXPERIMENTAL emulation of the unreleased multitap. Enables ports 3 4 5.
+	MDFNI_SetSetting("pcfx.nospritelimit", "1"); // PCFX: Remove 16-sprites-per-scanline hardware limit.
+	MDFNI_SetSetting("pcfx.slstart", "4"); // PCFX: First rendered scanline 4 default
+	MDFNI_SetSetting("pcfx.slend", "235"); // PCFX: Last rendered scanline 235 default, 239max
+
+//	NSString *cfgPath = [[current BIOSPath] stringByAppendingPathComponent:@"mednafen-export.cfg"];
+//	MDFN_SaveSettings(cfgPath.UTF8String);
 }
 
 - (id)init {
-    if((self = [super init]))
-    {
+    if((self = [super init])) {
         _current = self;
 
         multiTapPlayerCount = 2;
@@ -883,8 +277,86 @@ static void mednafen_init(MednafenGameCore* current)
         for(unsigned i = 0; i < 8; i++) {
             inputBuffer[i] = (uint32_t *) calloc(9, sizeof(uint32_t));
         }
+
+		GBAMap[PVGBAButtonRight] 	= 4;
+        GBAMap[PVGBAButtonLeft]     = 5;
+        GBAMap[PVGBAButtonUp]       = 6;
+        GBAMap[PVGBAButtonDown]     = 7;
+        
+        GBAMap[PVGBAButtonA]        = 0;
+		GBAMap[PVGBAButtonB] 		= 1;
+        
+		GBAMap[PVGBAButtonSelect]	= 2;
+		GBAMap[PVGBAButtonStart] 	= 3;
+        
+        GBAMap[PVGBAButtonR]        = 8;
+		GBAMap[PVGBAButtonL] 		= 9;
+
+		// Gameboy + Color Map
+		GBMap[PVGBButtonRight] 	= 4;
+        GBMap[PVGBButtonLeft]   = 5;
+        GBMap[PVGBButtonUp]     = 6;
+        GBMap[PVGBButtonDown]   = 7;
+        
+        GBMap[PVGBButtonA]      = 0;
+		GBMap[PVGBButtonB] 		= 1;
+		GBMap[PVGBButtonSelect]	= 2;
+		GBMap[PVGBButtonStart] 	= 3;
+
+		// SNES Map
+        SNESMap[PVSNESButtonUp]           = 4;
+        SNESMap[PVSNESButtonDown]         = 5;
+        SNESMap[PVSNESButtonLeft]         = 6;
+        SNESMap[PVSNESButtonRight]        = 7;
+        
+        SNESMap[PVSNESButtonA]            = 8;
+        SNESMap[PVSNESButtonB]            = 0;
+        SNESMap[PVSNESButtonX]            = 9;
+        SNESMap[PVSNESButtonY]            = 1;
+        
+        SNESMap[PVSNESButtonTriggerLeft]  = 10;
+        SNESMap[PVSNESButtonTriggerRight] = 11;
+        
+        SNESMap[PVSNESButtonSelect]       = 2;
+        SNESMap[PVSNESButtonStart]        = 3;
+
+		// PCE Map
+        PCEMap[PVPCEButtonUp]       = 4;
+        PCEMap[PVPCEButtonRight]    = 5;
+        PCEMap[PVPCEButtonDown]     = 6;
+        PCEMap[PVPCEButtonLeft]     = 7;
+
+        PCEMap[PVPCEButtonButton1]  = 0;
+        PCEMap[PVPCEButtonButton2]  = 1;
+        PCEMap[PVPCEButtonButton3]  = 8;
+        PCEMap[PVPCEButtonButton4]  = 9;
+        PCEMap[PVPCEButtonButton5]  = 10;
+        PCEMap[PVPCEButtonButton6]  = 11;
+
+        PCEMap[PVPCEButtonSelect]   = 2;
+        PCEMap[PVPCEButtonRun]      = 3;
+        PCEMap[PVPCEButtonMode]     = 12;
+
+		// PCFX Map
+        PCFXMap[PVPCFXButtonUp]         = 8;
+        PCFXMap[PVPCFXButtonRight]      = 9;
+        PCFXMap[PVPCFXButtonDown]       = 10;
+        PCFXMap[PVPCFXButtonLeft]       = 11;
+
+        PCFXMap[PVPCFXButtonButton1]    = 0;
+        PCFXMap[PVPCFXButtonButton2]    = 1;
+        PCFXMap[PVPCFXButtonButton3]    = 2;
+        PCFXMap[PVPCFXButtonButton4]    = 3;
+        PCFXMap[PVPCFXButtonButton5]    = 4;
+        PCFXMap[PVPCFXButtonButton6]    = 5;
+
+        PCFXMap[PVPCFXButtonSelect]     = 6;
+        PCFXMap[PVPCFXButtonRun]        = 7;
+        PCFXMap[PVPCFXButtonMode]       = 12;
+        
     }
 
+    
     return self;
 }
 
@@ -893,79 +365,141 @@ static void mednafen_init(MednafenGameCore* current)
         free(inputBuffer[i]);
     }
 
-    delete backBufferSurf;
-    delete frontBufferSurf;
-    
+
     if (_current == self) {
         _current = nil;
+		delete backBufferSurf;
+		delete frontBufferSurf;
     }
 }
 
 # pragma mark - Execution
 
-static void emulation_run() {
+static void emulation_run(BOOL skipFrame) {
     GET_CURRENT_OR_RETURN();
     
     static int16_t sound_buf[0x10000];
-    int32 rects[game->fb_height];
+	int32 *rects = new int32[game->fb_height]; //(int32 *)malloc(sizeof(int32) * game->fb_height);
     rects[0] = ~0;
 
-    EmulateSpecStruct spec = {0};
-    spec.surface = backBufferSurf;
-    spec.SoundRate = current->sampleRate;
-    spec.SoundBuf = sound_buf;
-    spec.LineWidths = rects;
-    spec.SoundBufMaxSize = sizeof(sound_buf) / 2;
-    spec.SoundVolume = 1.0;
-    spec.soundmultiplier = 1.0;
+	current->spec = {0};
+    current->spec.surface = backBufferSurf;
+    current->spec.SoundRate = current->sampleRate;
+    current->spec.SoundBuf = sound_buf;
+    current->spec.LineWidths = rects;
+    current->spec.SoundBufMaxSize = sizeof(sound_buf) / 2;
+	current->spec.SoundBufSize = 0;
+    current->spec.SoundVolume = 1.0;
+    current->spec.soundmultiplier = 1.0;
+	current->spec.skip = skipFrame;
 
-    MDFNI_Emulate(&spec);
+    MDFNI_Emulate(&current->spec);
 
-    current->mednafenCoreTiming = current->masterClock / spec.MasterCycles;
+    current->mednafenCoreTiming = current->masterClock / current->spec.MasterCycles;
     
     // Fix for game stutter. mednafenCoreTiming flutters on init before settling so
     // now we reset the game speed each frame to make sure current->gameInterval
     // is up to date while respecting the current game speed setting
     [current setGameSpeed:[current gameSpeed]];
 
-    if(current->systemType == psx)
+    if(current->_systemType == MednaSystemPSX)
     {
-        current->videoWidth = rects[spec.DisplayRect.y];
-        current->videoOffsetX = spec.DisplayRect.x;
+        current->videoWidth = rects[current->spec.DisplayRect.y];
+        current->videoOffsetX = current->spec.DisplayRect.x;
     }
     else if(game->multires)
     {
-        current->videoWidth = rects[spec.DisplayRect.y];
-        current->videoOffsetX = spec.DisplayRect.x;
+        current->videoWidth = rects[current->spec.DisplayRect.y];
+        current->videoOffsetX = current->spec.DisplayRect.x;
     }
     else
     {
-        current->videoWidth = spec.DisplayRect.w;
-        current->videoOffsetX = spec.DisplayRect.x;
+        current->videoWidth = current->spec.DisplayRect.w;
+        current->videoOffsetX = current->spec.DisplayRect.x;
     }
 
-    current->videoHeight = spec.DisplayRect.h;
-    current->videoOffsetY = spec.DisplayRect.y;
+    current->videoHeight = current->spec.DisplayRect.h;
+    current->videoOffsetY = current->spec.DisplayRect.y;
 
-    update_audio_batch(spec.SoundBuf, spec.SoundBufSize);
+    update_audio_batch(current->spec.SoundBuf, current->spec.SoundBufSize);
+
+	delete[] rects;
 }
 
-- (BOOL)loadFileAtPath:(NSString *)path
+- (BOOL)loadFileAtPath:(NSString *)path error:(NSError**)error
 {
     [[NSFileManager defaultManager] createDirectoryAtPath:[self batterySavesPath] withIntermediateDirectories:YES attributes:nil error:NULL];
 
     if([[self systemIdentifier] isEqualToString:@"com.provenance.lynx"])
     {
-        systemType = lynx;
+        self.systemType = MednaSystemLynx;
         
         mednafenCoreModule = @"lynx";
         mednafenCoreAspect = OEIntSizeMake(80, 51);
         //mednafenCoreAspect = OEIntSizeMake(game->nominal_width, game->nominal_height);
         sampleRate         = 48000;
     }
+	else if([[self systemIdentifier] isEqualToString:@"com.provenance.nes"])
+	{
+		self.systemType = MednaSystemNES;
+
+		mednafenCoreModule = @"nes";
+		mednafenCoreAspect = OEIntSizeMake(4, 3);
+		//mednafenCoreAspect = OEIntSizeMake(game->nominal_width, game->nominal_height);
+		sampleRate         = 48000;
+	}
+	else if([[self systemIdentifier] isEqualToString:@"com.provenance.snes"])
+	{
+		self.systemType = MednaSystemSNES;
+
+#if USE_SNES_FAUST
+		mednafenCoreModule = @"snes_faust";
+#else
+		mednafenCoreModule = @"snes";
+#endif
+		mednafenCoreAspect = OEIntSizeMake(4, 3);
+		//mednafenCoreAspect = OEIntSizeMake(game->nominal_width, game->nominal_height);
+		sampleRate         = 48000;
+	}
+	else if([[self systemIdentifier] isEqualToString:@"com.provenance.gb"] || [[self systemIdentifier] isEqualToString:@"com.provenance.gbc"])
+	{
+		self.systemType = MednaSystemGB;
+
+		mednafenCoreModule = @"gb";
+		mednafenCoreAspect = OEIntSizeMake(10, 9);
+		//mednafenCoreAspect = OEIntSizeMake(game->nominal_width, game->nominal_height);
+		sampleRate         = 48000;
+	}
+	else if([[self systemIdentifier] isEqualToString:@"com.provenance.gba"])
+	{
+		self.systemType = MednaSystemGBA;
+
+		mednafenCoreModule = @"gba";
+		mednafenCoreAspect = OEIntSizeMake(3, 2);
+		//mednafenCoreAspect = OEIntSizeMake(game->nominal_width, game->nominal_height);
+		sampleRate         = 44100;
+	}
+	else if([[self systemIdentifier] isEqualToString:@"com.provenance.genesis"]) // Genesis aka Megaddrive
+	{
+		self.systemType = MednaSystemMD;
+
+		mednafenCoreModule = @"md";
+		mednafenCoreAspect = OEIntSizeMake(4, 3);
+		//mednafenCoreAspect = OEIntSizeMake(game->nominal_width, game->nominal_height);
+		sampleRate         = 48000;
+	}
+	else if([[self systemIdentifier] isEqualToString:@"com.provenance.mastersystem"])
+	{
+		self.systemType = MednaSystemSMS;
+
+		mednafenCoreModule = @"sms";
+		mednafenCoreAspect = OEIntSizeMake(256 * (8.0/7.0), 192);
+//		mednafenCoreAspect = OEIntSizeMake(game->nominal_width, game->nominal_height);
+		sampleRate         = 48000;
+	}
     else if([[self systemIdentifier] isEqualToString:@"com.provenance.ngp"] || [[self systemIdentifier] isEqualToString:@"com.provenance.ngpc"])
     {
-        systemType = neogeo;
+        self.systemType = MednaSystemNeoGeo;
         
         mednafenCoreModule = @"ngp";
         mednafenCoreAspect = OEIntSizeMake(20, 19);
@@ -974,16 +508,20 @@ static void emulation_run() {
     }
     else if([[self systemIdentifier] isEqualToString:@"com.provenance.pce"] || [[self systemIdentifier] isEqualToString:@"com.provenance.pcecd"] || [[self systemIdentifier] isEqualToString:@"com.provenance.sgfx"])
     {
-        systemType = pce;
-        
-        mednafenCoreModule = @"pce";
+        self.systemType = MednaSystemPCE;
+
+#if USE_PCE_FAST
+		mednafenCoreModule = @"pce_fast";
+#else
+		mednafenCoreModule = @"pce";
+#endif
         mednafenCoreAspect = OEIntSizeMake(256 * (8.0/7.0), 240);
         //mednafenCoreAspect = OEIntSizeMake(game->nominal_width, game->nominal_height);
         sampleRate         = 48000;
     }
     else if([[self systemIdentifier] isEqualToString:@"com.provenance.pcfx"])
     {
-        systemType = pcfx;
+        self.systemType = MednaSystemPCFX;
         
         mednafenCoreModule = @"pcfx";
         mednafenCoreAspect = OEIntSizeMake(4, 3);
@@ -992,17 +530,17 @@ static void emulation_run() {
     }
     else if([[self systemIdentifier] isEqualToString:@"com.provenance.psx"])
     {
-        systemType = psx;
+        self.systemType = MednaSystemPSX;
         
         mednafenCoreModule = @"psx";
-        // Note: OpenEMU sets this to 4, 3.
-        mednafenCoreAspect = OEIntSizeMake(3, 2);
+        // Note: OpenEMU sets this to 4:3, but it's demonstrably wrong. Tested andlooked into it myself… the other emulators got this wrong, 3:2 was close, but it's actually 10:7 - Sev
+        mednafenCoreAspect = OEIntSizeMake(10, 7);
         //mednafenCoreAspect = OEIntSizeMake(game->nominal_width, game->nominal_height);
         sampleRate         = 44100;
     }
     else if([[self systemIdentifier] isEqualToString:@"com.provenance.vb"])
     {
-        systemType = vb;
+        self.systemType = MednaSystemVirtualBoy;
         
         mednafenCoreModule = @"vb";
         mednafenCoreAspect = OEIntSizeMake(12, 7);
@@ -1011,7 +549,7 @@ static void emulation_run() {
     }
     else if([[self systemIdentifier] isEqualToString:@"com.provenance.ws"] || [[self systemIdentifier] isEqualToString:@"com.provenance.wsc"])
     {
-        systemType = wswan;
+        self.systemType = MednaSystemWonderSwan;
         
         mednafenCoreModule = @"wswan";
         mednafenCoreAspect = OEIntSizeMake(14, 9);
@@ -1029,7 +567,22 @@ static void emulation_run() {
 
     game = MDFNI_LoadGame([mednafenCoreModule UTF8String], [path UTF8String]);
 
+	// Uncomment this to set the aspect ratio by the game's render size according to mednafen
+	// is this correct for EU, JP, US? Still testing.
+//	mednafenCoreAspect = OEIntSizeMake(game->nominal_width, game->nominal_height);
+
     if(!game) {
+        NSDictionary *userInfo = @{
+                                   NSLocalizedDescriptionKey: @"Failed to load game.",
+                                   NSLocalizedFailureReasonErrorKey: @"Mednafen failed to load game.",
+                                   NSLocalizedRecoverySuggestionErrorKey: @"Check the file isn't corrupt and supported Mednafen ROM format."
+                                   };
+        
+        NSError *newError = [NSError errorWithDomain:PVEmulatorCoreErrorDomain
+                                                code:PVEmulatorCoreErrorCodeCouldNotLoadRom
+                                            userInfo:userInfo];
+        
+        *error = newError;
         return NO;
     }
     
@@ -1040,7 +593,7 @@ static void emulation_run() {
 
     masterClock = game->MasterClock >> 32;
 
-    if (systemType == pce)
+    if (self.systemType == MednaSystemPCE)
     {
         game->SetInput(0, "gamepad", (uint8_t *)inputBuffer[0]);
         game->SetInput(1, "gamepad", (uint8_t *)inputBuffer[1]);
@@ -1048,15 +601,91 @@ static void emulation_run() {
         game->SetInput(3, "gamepad", (uint8_t *)inputBuffer[3]);
         game->SetInput(4, "gamepad", (uint8_t *)inputBuffer[4]);
     }
-    else if (systemType == pcfx)
+    else if (self.systemType == MednaSystemPCFX)
     {
         game->SetInput(0, "gamepad", (uint8_t *)inputBuffer[0]);
         game->SetInput(1, "gamepad", (uint8_t *)inputBuffer[1]);
     }
-    else if (systemType == psx)
+    else if (self.systemType == MednaSystemPSX)
     {
         for(unsigned i = 0; i < multiTapPlayerCount; i++) {
-            game->SetInput(i, "dualshock", (uint8_t *)inputBuffer[i]);
+            // changing "dualshock" to "gampepad" ↓ to make games playable for now, until we can fix the analog input bugs
+            game->SetInput(i, "gamepad", (uint8_t *)inputBuffer[i]);
+        }
+        
+        // Multi-Disc check
+        BOOL multiDiscGame = NO;
+        NSNumber *discCount = [MednafenGameCore multiDiscPSXGames][self.romSerial];
+        if (discCount) {
+            self.maxDiscs = [discCount intValue];
+            multiDiscGame = YES;
+        }
+        
+        // PSX: Set multitap configuration if detected
+//        NSString *serial = [self romSerial];
+//        NSNumber* multitapCount = [MednafenGameCore multiDiscPSXGames][serial];
+//
+// FIXME:  "forget about multitap for now :)"
+		// Set multitap configuration if detected
+		//    if (multiTapGames[[current ROMSerial]])
+		//    {
+		//        current->multiTapPlayerCount = [[multiTapGames objectForKey:[current ROMSerial]] intValue];
+		//
+		//        if([multiTap5PlayerPort2 containsObject:[current ROMSerial]])
+		//            MDFNI_SetSetting("psx.input.pport2.multitap", "1"); // Enable multitap on PSX port 2
+		//        else
+		//        {
+		//            MDFNI_SetSetting("psx.input.pport1.multitap", "1"); // Enable multitap on PSX port 1
+		//            if(current->multiTapPlayerCount > 5)
+		//                MDFNI_SetSetting("psx.input.pport2.multitap", "1"); // Enable multitap on PSX port 2
+		//        }
+		//    }
+
+
+//        if (multitapCount != nil)
+//        {
+//            multiTapPlayerCount = [multitapCount intValue];
+//            
+//            if([[MednafenGameCore multiTap5PlayerPort2] containsObject:serial]) {
+//                MDFNI_SetSetting("psx.input.pport2.multitap", "1"); // Enable multitap on PSX port 2
+//            } else {
+//                MDFNI_SetSetting("psx.input.pport1.multitap", "1"); // Enable multitap on PSX port 1
+//                if(multiTapPlayerCount > 5) {
+//                    MDFNI_SetSetting("psx.input.pport2.multitap", "1"); // Enable multitap on PSX port 2
+//                }
+//            }
+//        }
+        
+        if (multiDiscGame && ![path.pathExtension.lowercaseString isEqualToString:@"m3u"]) {
+            NSString *m3uPath = [path.stringByDeletingPathExtension stringByAppendingPathExtension:@"m3u"];
+            NSRange rangeOfDocuments = [m3uPath rangeOfString:@"/Documents/" options:NSCaseInsensitiveSearch];
+            if (rangeOfDocuments.location != NSNotFound) {
+                m3uPath = [m3uPath substringFromIndex:rangeOfDocuments.location + 11];
+            }
+
+            NSString *message = [NSString stringWithFormat:@"This game requires multiple discs and must be loaded using a m3u file with all %lu discs.\n\nTo enable disc switching and ensure save files load across discs, it cannot be loaded as a single disc.\n\nPlease install a .m3u file with the filename %@.\nSee https://bitly.com/provm3u", self.maxDiscs, m3uPath];
+
+            NSDictionary *userInfo = @{
+                                       NSLocalizedDescriptionKey: @"Failed to load game.",
+                                       NSLocalizedFailureReasonErrorKey: @"Missing required m3u file.",
+                                       NSLocalizedRecoverySuggestionErrorKey: message
+                                       };
+            
+            NSError *newError = [NSError errorWithDomain:PVEmulatorCoreErrorDomain
+                                                    code:PVEmulatorCoreErrorCodeMissingM3U
+                                                userInfo:userInfo];
+            
+            *error = newError;
+            return NO;
+        }
+        
+        if (self.maxDiscs > 1) {
+            // Parse number of discs in m3u
+            NSString *m3uString = [NSString stringWithContentsOfFile:path encoding:NSUTF8StringEncoding error:nil];
+            NSRegularExpression *regex = [NSRegularExpression regularExpressionWithPattern:@".cue|.ccd" options:NSRegularExpressionCaseInsensitive error:nil];
+            NSUInteger numberOfMatches = [regex numberOfMatchesInString:m3uString options:0 range:NSMakeRange(0, [m3uString length])];
+            
+            NSLog(@"Loaded m3u containing %lu cue sheets or ccd",numberOfMatches);
         }
     }
     else
@@ -1066,59 +695,107 @@ static void emulation_run() {
 
     MDFNI_SetMedia(0, 2, 0, 0); // Disc selection API
 
-    // Parse number of discs in m3u
-    if([[[path pathExtension] lowercaseString] isEqualToString:@"m3u"])
-    {
-        NSString *m3uString = [NSString stringWithContentsOfFile:path encoding:NSUTF8StringEncoding error:nil];
-        NSRegularExpression *regex = [NSRegularExpression regularExpressionWithPattern:@".cue|.ccd" options:NSRegularExpressionCaseInsensitive error:nil];
-        NSUInteger numberOfMatches = [regex numberOfMatchesInString:m3uString options:0 range:NSMakeRange(0, [m3uString length])];
-
-        NSLog(@"Loaded m3u containing %lu cue sheets or ccd",numberOfMatches);
-
-        maxDiscs = numberOfMatches;
-    }
-
-    emulation_run();
+    emulation_run(NO);
 
     return YES;
 }
 
+-(void)setMedia:(BOOL)open forDisc:(NSUInteger)disc {
+    MDFNI_SetMedia(0, open ? 0 : 2, (uint32) disc, 0);
+}
+
+-(NSUInteger)maxNumberPlayers {
+    NSUInteger maxPlayers = 2;
+    switch (self.systemType) {
+        case MednaSystemPSX:
+            maxPlayers = multiTapPlayerCount;
+            break;
+        case MednaSystemPCE:
+            maxPlayers = 5;
+            break;
+		case MednaSystemMD:
+		case MednaSystemSMS:
+		case MednaSystemNES:
+		case MednaSystemSNES:
+        case MednaSystemPCFX:
+            maxPlayers = 2;
+            break;
+		case MednaSystemGB:
+		case MednaSystemGBA:
+        case MednaSystemNeoGeo:
+        case MednaSystemLynx:
+        case MednaSystemVirtualBoy:
+		case MednaSystemGG:
+        case MednaSystemWonderSwan:
+            maxPlayers = 1;
+            break;
+	}
+    
+    return maxPlayers;
+}
+
 - (void)pollControllers {
     unsigned maxValue = 0;
-    const int*map;
-    switch (systemType) {
-        case psx:
+	const int*map = nullptr;
+    switch (self.systemType) {
+		case MednaSystemGBA:
+			maxValue = PVGBAButtonCount;
+			map = GBAMap;
+			break;
+		case MednaSystemGB:
+			maxValue = PVGBButtonCount;
+			map = GBMap;
+			break;
+        case MednaSystemPSX:
             maxValue = PVPSXButtonCount;
             map = PSXMap;
             break;
-        case neogeo:
-            maxValue = OENGPButtonCount;
+        case MednaSystemNeoGeo:
+            maxValue = PVNGPButtonCount;
             map = NeoMap;
             break;
-        case lynx:
-            maxValue = OELynxButtonCount;
+        case MednaSystemLynx:
+            maxValue = PVLynxButtonCount;
             map = LynxMap;
             break;
-        case pce:
-            maxValue = OEPCEButtonCount;
+		case MednaSystemSNES:
+			maxValue = PVSNESButtonCount;
+			map = SNESMap;
+			break;
+		case MednaSystemNES:
+			maxValue = PVNESButtonCount;
+			map = NESMap;
+			break;
+        case MednaSystemPCE:
+            maxValue = PVPCEButtonCount;
             map = PCEMap;
             break;
-        case pcfx:
-            maxValue = OEPCFXButtonCount;
+        case MednaSystemPCFX:
+            maxValue = PVPCFXButtonCount;
             map = PCFXMap;
             break;
-        case vb:
-            maxValue = OEVBButtonCount;
+        case MednaSystemVirtualBoy:
+            maxValue = PVVBButtonCount;
             map = VBMap;
             break;
-        case wswan:
-            maxValue = OEWSButtonCount;
+        case MednaSystemWonderSwan:
+            maxValue = PVWSButtonCount;
             map = WSMap;
             break;
-            return;
-    }
+		case MednaSystemGG:
+			return;
+			break;
+		case MednaSystemMD:
+			return;
+			break;
+		case MednaSystemSMS:
+			return;
+			break;
+	}
+    
+    NSUInteger maxNumberPlayers = MIN([self maxNumberPlayers], 4);
 
-    for (NSInteger playerIndex = 0; playerIndex < 2; playerIndex++) {
+    for (NSInteger playerIndex = 0; playerIndex < maxNumberPlayers; playerIndex++) {
         GCController *controller = nil;
         
         if (self.controller1 && playerIndex == 0) {
@@ -1128,11 +805,19 @@ static void emulation_run() {
         {
             controller = self.controller2;
         }
+        else if (self.controller3 && playerIndex == 3)
+        {
+            controller = self.controller3;
+        }
+        else if (self.controller4 && playerIndex == 4)
+        {
+            controller = self.controller4;
+        }
         
         if (controller) {
             for (unsigned i=0; i<maxValue; i++) {
-                
-                if (systemType != psx || i < OEPSXLeftAnalogUp) {
+
+				if (self.systemType != MednaSystemPSX || i < PVPSXButtonLeftAnalogUp) {
                     uint32_t value = (uint32_t)[self controllerValueForButtonID:i forPlayer:playerIndex];
                     
                     if(value > 0) {
@@ -1151,14 +836,19 @@ static void emulation_run() {
     }
 }
 
+- (void)executeFrameSkippingFrame: (BOOL) skip
+{
+	// Should we be using controller callbacks instead?
+	if (!skip && (self.controller1 || self.controller2 || self.controller3 || self.controller4)) {
+		[self pollControllers];
+	}
+
+	emulation_run(skip);
+}
+
 - (void)executeFrame
 {
-    // Should we be using controller callbacks instead?
-    if (self.controller1 || self.controller2) {
-        [self pollControllers];
-    }
-    
-    emulation_run();
+	[self executeFrameSkippingFrame:NO];
 }
 
 - (void)resetEmulation
@@ -1175,7 +865,7 @@ static void emulation_run() {
 
 - (NSTimeInterval)frameInterval
 {
-    return mednafenCoreTiming ?: 60;
+    return mednafenCoreTiming ?: 59.92;
 }
 
 # pragma mark - Video
@@ -1262,12 +952,72 @@ static size_t update_audio_batch(const int16_t *data, size_t frames)
 
 # pragma mark - Save States
 
-- (BOOL)saveStateToFileAtPath:(NSString *)fileName {
-    return MDFNI_SaveState(fileName.fileSystemRepresentation, "", NULL, NULL, NULL);
+- (BOOL)saveStateToFileAtPath:(NSString *)fileName error:(NSError**)error   {
+	if (game != nil ) {
+		BOOL success = MDFNI_SaveState(fileName.fileSystemRepresentation, "", NULL, NULL, NULL);
+		if (!success) {
+			NSDictionary *userInfo = @{
+									   NSLocalizedDescriptionKey: @"Failed to save state.",
+									   NSLocalizedFailureReasonErrorKey: @"Core failed to create save state.",
+									   NSLocalizedRecoverySuggestionErrorKey: @""
+									   };
+
+			NSError *newError = [NSError errorWithDomain:PVEmulatorCoreErrorDomain
+													code:PVEmulatorCoreErrorCodeCouldNotSaveState
+												userInfo:userInfo];
+
+			*error = newError;
+		}
+		return success;
+	} else {
+		NSDictionary *userInfo = @{
+								   NSLocalizedDescriptionKey: @"Failed to save state.",
+								   NSLocalizedFailureReasonErrorKey: @"Core failed to create save state because no game is loaded.",
+								   NSLocalizedRecoverySuggestionErrorKey: @""
+								   };
+
+		NSError *newError = [NSError errorWithDomain:PVEmulatorCoreErrorDomain
+												code:PVEmulatorCoreErrorCodeCouldNotSaveState
+											userInfo:userInfo];
+
+		*error = newError;
+
+		return NO;
+	}
 }
 
-- (BOOL)loadStateFromFileAtPath:(NSString *)fileName {
-    return MDFNI_LoadState(fileName.fileSystemRepresentation, "");
+- (BOOL)loadStateFromFileAtPath:(NSString *)fileName error:(NSError**)error   {
+	if (game != nil ) {
+    	BOOL success = MDFNI_LoadState(fileName.fileSystemRepresentation, "");
+		if (!success) {
+			NSDictionary *userInfo = @{
+									   NSLocalizedDescriptionKey: @"Failed to save state.",
+									   NSLocalizedFailureReasonErrorKey: @"Core failed to load save state.",
+									   NSLocalizedRecoverySuggestionErrorKey: @""
+									   };
+
+			NSError *newError = [NSError errorWithDomain:PVEmulatorCoreErrorDomain
+													code:PVEmulatorCoreErrorCodeCouldNotLoadState
+												userInfo:userInfo];
+
+			*error = newError;
+		}
+		return success;
+	} else {
+		NSDictionary *userInfo = @{
+								   NSLocalizedDescriptionKey: @"Failed to save state.",
+								   NSLocalizedFailureReasonErrorKey: @"No game loaded.",
+								   NSLocalizedRecoverySuggestionErrorKey: @""
+								   };
+
+		NSError *newError = [NSError errorWithDomain:PVEmulatorCoreErrorDomain
+												code:PVEmulatorCoreErrorCodeCouldNotLoadState
+											userInfo:userInfo];
+
+		*error = newError;
+
+		return NO;
+	}
 }
 
 - (NSData *)serializeStateWithError:(NSError **)outError
@@ -1283,7 +1033,7 @@ static size_t update_audio_batch(const int16_t *data, size_t frames)
     
     if(outError) {
         assert(false);
-#pragma message "fix error log"
+		// TODO: "fix error log"
 //        *outError = [NSError errorWithDomain:OEGameCoreErrorDomain code:OEGameCoreCouldNotSaveStateError  userInfo:@{
 //            NSLocalizedDescriptionKey : @"Save state data could not be written",
 //            NSLocalizedRecoverySuggestionErrorKey : @"The emulator could not write the state data."
@@ -1305,7 +1055,7 @@ static size_t update_audio_batch(const int16_t *data, size_t frames)
 
     if(serialSize != length)
     {
-        #pragma message "fix error log"
+		// TODO: "fix error log"
 //        error = [NSError errorWithDomain:OEGameCoreErrorDomain
 //                                    code:OEGameCoreStateHasWrongSizeError
 //                                userInfo:@{
@@ -1324,23 +1074,14 @@ static size_t update_audio_batch(const int16_t *data, size_t frames)
     }
 }
 
-# pragma mark - Input
-
-// Map OE button order to Mednafen button order
-const int LynxMap[] = { 6, 7, 4, 5, 0, 1, 3, 2 };
-const int PCEMap[]  = { 4, 6, 7, 5, 0, 1, 8, 9, 10, 11, 3, 2, 12 };
-const int PCFXMap[] = { 8, 10, 11, 9, 0, 1, 2, 3, 4, 5, 7, 6 };
-const int PSXMap[]  = { 4, 6, 7, 5, 12, 13, 14, 15, 10, 8, 1, 11, 9, 2, 3, 0, 16, 24, 23, 22, 21, 20, 19, 18, 17 };
-const int VBMap[]   = { 9, 8, 7, 6, 4, 13, 12, 5, 3, 2, 0, 1, 10, 11 };
-const int WSMap[]   = { 0, 2, 3, 1, 4, 6, 7, 5, 9, 10, 8, 11 };
-const int NeoMap[]  = { 0, 1, 2, 3, 4, 5, 6};
+# pragma mark - Input -
 
 #pragma mark Atari Lynx
-- (oneway void)didPushLynxButton:(OELynxButton)button forPlayer:(NSUInteger)player {
+- (void)didPushLynxButton:(PVLynxButton)button forPlayer:(NSInteger)player {
     inputBuffer[player][0] |= 1 << LynxMap[button];
 }
 
-- (oneway void)didReleaseLynxButton:(OELynxButton)button forPlayer:(NSUInteger)player {
+- (void)didReleaseLynxButton:(PVLynxButton)button forPlayer:(NSInteger)player {
     inputBuffer[player][0] &= ~(1 << LynxMap[button]);
 }
 
@@ -1349,21 +1090,21 @@ const int NeoMap[]  = { 0, 1, 2, 3, 4, 5, 6};
         GCExtendedGamepad *pad = [controller extendedGamepad];
         GCControllerDirectionPad *dpad = [pad dpad];
         switch (buttonID) {
-            case OELynxButtonUp:
+            case PVLynxButtonUp:
                 return [[dpad up] isPressed]?:[[[pad leftThumbstick] up] isPressed];
-            case OELynxButtonDown:
+            case PVLynxButtonDown:
                 return [[dpad down] isPressed]?:[[[pad leftThumbstick] down] isPressed];
-            case OELynxButtonLeft:
+            case PVLynxButtonLeft:
                 return [[dpad left] isPressed]?:[[[pad leftThumbstick] left] isPressed];
-            case OELynxButtonRight:
+            case PVLynxButtonRight:
                 return [[dpad right] isPressed]?:[[[pad leftThumbstick] right] isPressed];
-            case OELynxButtonB:
+            case PVLynxButtonA:
                 return [[pad buttonB] isPressed]?:[[pad buttonX] isPressed];
-            case OELynxButtonA:
+            case PVLynxButtonB:
                 return [[pad buttonA] isPressed]?:[[pad buttonY] isPressed];
-            case OELynxButtonOption1:
+            case PVLynxButtonOption1:
                 return [[pad leftShoulder] isPressed]?:[[pad leftTrigger] isPressed];
-            case OELynxButtonOption2:
+            case PVLynxButtonOption2:
                 return [[pad rightShoulder] isPressed]?:[[pad rightTrigger] isPressed];
             default:
                 break;
@@ -1372,21 +1113,21 @@ const int NeoMap[]  = { 0, 1, 2, 3, 4, 5, 6};
         GCGamepad *pad = [controller gamepad];
         GCControllerDirectionPad *dpad = [pad dpad];
         switch (buttonID) {
-            case OELynxButtonUp:
+            case PVLynxButtonUp:
                 return [[dpad up] isPressed];
-            case OELynxButtonDown:
+            case PVLynxButtonDown:
                 return [[dpad down] isPressed];
-            case OELynxButtonLeft:
+            case PVLynxButtonLeft:
                 return [[dpad left] isPressed];
-            case OELynxButtonRight:
+            case PVLynxButtonRight:
                 return [[dpad right] isPressed];
-            case OELynxButtonB:
+            case PVLynxButtonA:
                 return [[pad buttonB] isPressed]?:[[pad buttonX] isPressed];
-            case OELynxButtonA:
+            case PVLynxButtonB:
                 return [[pad buttonA] isPressed]?:[[pad buttonY] isPressed];
-            case OELynxButtonOption1:
+            case PVLynxButtonOption1:
                 return [[pad leftShoulder] isPressed];
-            case OELynxButtonOption2:
+            case PVLynxButtonOption2:
                 return [[pad rightShoulder] isPressed];
             default:
                 break;
@@ -1397,22 +1138,22 @@ const int NeoMap[]  = { 0, 1, 2, 3, 4, 5, 6};
         GCMicroGamepad *pad = [controller microGamepad];
         GCControllerDirectionPad *dpad = [pad dpad];
         switch (buttonID) {
-            case OELynxButtonUp:
+            case PVLynxButtonUp:
                 return [[dpad up] value] > 0.5;
                 break;
-            case OELynxButtonDown:
+            case PVLynxButtonDown:
                 return [[dpad down] value] > 0.5;
                 break;
-            case OELynxButtonLeft:
+            case PVLynxButtonLeft:
                 return [[dpad left] value] > 0.5;
                 break;
-            case OELynxButtonRight:
+            case PVLynxButtonRight:
                 return [[dpad right] value] > 0.5;
                 break;
-            case OELynxButtonA:
+            case PVLynxButtonB:
                 return [[pad buttonA] isPressed];
                 break;
-            case OELynxButtonB:
+            case PVLynxButtonA:
                 return [[pad buttonX] isPressed];
                 break;
             default:
@@ -1423,95 +1164,172 @@ const int NeoMap[]  = { 0, 1, 2, 3, 4, 5, 6};
     return 0;
 }
 
+#pragma mark SNES
+- (void)didPushSNESButton:(enum PVSNESButton)button forPlayer:(NSInteger)player {
+	int mappedButton = SNESMap[button];
+	inputBuffer[player][0] |= 1 << mappedButton;
+}
+
+-(void)didReleaseSNESButton:(enum PVSNESButton)button forPlayer:(NSInteger)player {
+	inputBuffer[player][0] &= ~(1 << SNESMap[button]);
+}
+
+#pragma mark NES
+- (void)didPushNESButton:(enum PVNESButton)button forPlayer:(NSInteger)player {
+	int mappedButton = NESMap[button];
+	inputBuffer[player][0] |= 1 << mappedButton;
+}
+
+-(void)didReleaseNESButton:(enum PVNESButton)button forPlayer:(NSInteger)player {
+	inputBuffer[player][0] &= ~(1 << NESMap[button]);
+}
+
+#pragma mark GB / GBC
+- (void)didPushGBButton:(enum PVGBButton)button forPlayer:(NSInteger)player {
+	int mappedButton = GBMap[button];
+	inputBuffer[player][0] |= 1 << mappedButton;
+}
+
+-(void)didReleaseGBButton:(enum PVGBButton)button forPlayer:(NSInteger)player {
+	inputBuffer[player][0] &= ~(1 << GBMap[button]);
+}
+
+#pragma mark GBA
+- (void)didPushGBAButton:(enum PVGBAButton)button forPlayer:(NSInteger)player {
+	int mappedButton = GBAMap[button];
+	inputBuffer[player][0] |= 1 << mappedButton;
+}
+
+-(void)didReleaseGBAButton:(enum PVGBAButton)button forPlayer:(NSInteger)player {
+	int mappedButton = GBAMap[button];
+	inputBuffer[player][0] &= ~(1 << mappedButton);
+}
+
+#pragma mark Sega
+- (void)didPushSegaButton:(enum PVGenesisButton)button forPlayer:(NSInteger)player {
+	int mappedButton = GenesisMap[button];
+	inputBuffer[player][0] |= 1 << mappedButton;
+}
+
+-(void)didReleaseSegaButton:(enum PVGenesisButton)button forPlayer:(NSInteger)player {
+	inputBuffer[player][0] &= ~(1 << GenesisMap[button]);
+}
+
 #pragma mark Neo Geo
-- (oneway void)didPushNGPButton:(OENGPButton)button forPlayer:(NSUInteger)player
+- (void)didPushNGPButton:(PVNGPButton)button forPlayer:(NSInteger)player
 {
     inputBuffer[player][0] |= 1 << NeoMap[button];
 }
 
-- (oneway void)didReleaseNGPButton:(OENGPButton)button forPlayer:(NSUInteger)player
+- (void)didReleaseNGPButton:(PVNGPButton)button forPlayer:(NSInteger)player
 {
     inputBuffer[player][0] &= ~(1 << NeoMap[button]);
 }
 
 #pragma mark PC-*
-- (oneway void)didPushPCEButton:(OEPCEButton)button forPlayer:(NSUInteger)player
+#pragma mark PCE aka TurboGFX-16 & SuperGFX
+- (void)didPushPCEButton:(PVPCEButton)button forPlayer:(NSInteger)player
 {
-    if (button != OEPCEButtonMode) { // Check for six button mode toggle
+    if (button != PVPCEButtonMode) { // Check for six button mode toggle
         inputBuffer[player][0] |= 1 << PCEMap[button];
     } else {
         inputBuffer[player][0] ^= 1 << PCEMap[button];
     }
 }
 
-- (oneway void)didReleasePCEButton:(OEPCEButton)button forPlayer:(NSUInteger)player
+- (void)didReleasePCEButton:(PVPCEButton)button forPlayer:(NSInteger)player
 {
-    if (button != OEPCEButtonMode)
+    if (button != PVPCEButtonMode)
         inputBuffer[player][0] &= ~(1 << PCEMap[button]);
 }
 
-- (oneway void)didPushPCECDButton:(OEPCECDButton)button forPlayer:(NSUInteger)player
+#pragma mark PCE-CD
+- (void)didPushPCECDButton:(PVPCECDButton)button forPlayer:(NSInteger)player
 {
-    if (button != OEPCECDButtonMode) { // Check for six button mode toggle
+    if (button != PVPCECDButtonMode) { // Check for six button mode toggle
         inputBuffer[player][0] |= 1 << PCEMap[button];
     } else {
         inputBuffer[player][0] ^= 1 << PCEMap[button];
     }
 }
 
-- (oneway void)didReleasePCECDButton:(OEPCECDButton)button forPlayer:(NSUInteger)player;
+- (void)didReleasePCECDButton:(PVPCECDButton)button forPlayer:(NSInteger)player;
 {
-    if (button != OEPCECDButtonMode) {
+    if (button != PVPCECDButtonMode) {
         inputBuffer[player][0] &= ~(1 << PCEMap[button]);
     }
 }
 
-- (oneway void)didPushPCFXButton:(OEPCFXButton)button forPlayer:(NSUInteger)player;
+#pragma mark PCFX
+- (void)didPushPCFXButton:(PVPCFXButton)button forPlayer:(NSInteger)player;
 {
-    inputBuffer[player][0] |= 1 << PCFXMap[button];
+	if (button != PVPCFXButtonMode) { // Check for six button mode toggle
+		inputBuffer[player][0] |= 1 << PCFXMap[button];
+	} else {
+		inputBuffer[player][0] ^= 1 << PCFXMap[button];
+	}
 }
 
-- (oneway void)didReleasePCFXButton:(OEPCFXButton)button forPlayer:(NSUInteger)player;
+- (void)didReleasePCFXButton:(PVPCFXButton)button forPlayer:(NSInteger)player;
 {
-    inputBuffer[player][0] &= ~(1 << PCFXMap[button]);
+	if (button != PVPCFXButtonMode) {
+    	inputBuffer[player][0] &= ~(1 << PCFXMap[button]);
+	}
 }
 
 #pragma mark PSX
-- (oneway void)didPushPSXButton:(PVPSXButton)button forPlayer:(NSUInteger)player;
+- (void)didPushPSXButton:(PVPSXButton)button forPlayer:(NSInteger)player;
 {
+    if (button == PVPSXButtonStart) {
+        self.isStartPressed = true;
+    } else if (button == PVPSXButtonSelect) {
+        self.isSelectPressed = true;
+    }
     inputBuffer[player][0] |= 1 << PSXMap[button];
 }
 
-- (oneway void)didReleasePSXButton:(PVPSXButton)button forPlayer:(NSUInteger)player;
+- (void)didReleasePSXButton:(PVPSXButton)button forPlayer:(NSInteger)player;
 {
+    if (button == PVPSXButtonStart) {
+        self.isStartPressed = false;
+    } else if (button == PVPSXButtonSelect) {
+        self.isSelectPressed = false;
+    }
     inputBuffer[player][0] &= ~(1 << PSXMap[button]);
 }
 
-- (oneway void)didMovePSXJoystickDirection:(PVPSXButton)button withValue:(CGFloat)value forPlayer:(NSUInteger)player
+- (void)didMovePSXJoystickDirection:(PVPSXButton)button withValue:(CGFloat)value forPlayer:(NSInteger)player
 {
+    // Fix the analog circle-to-square axis range conversion by scaling between a value of 1.00 and 1.50
+    // We cannot use MDFNI_SetSetting("psx.input.port1.dualshock.axis_scale", "1.33") directly.
+    // Background: https://mednafen.github.io/documentation/psx.html#Section_analog_range
+    value *= 32767; // de-normalize
+    double scaledValue = MIN(floor(0.5 + value * 1.33), 32767); // 30712 / cos(2*pi/8) / 32767 = 1.33
+    
     int analogNumber = PSXMap[button] - 17;
     uint8_t *buf = (uint8_t *)inputBuffer[player];
-    *(uint16*)& buf[3 + analogNumber * 2] = 32767 * value;
+    MDFN_en16lsb(&buf[3 + analogNumber * 2], scaledValue);
+    MDFN_en16lsb(&buf[3 + (analogNumber ^ 1) * 2], 0);
 }
 
 #pragma mark Virtual Boy
-- (oneway void)didPushVBButton:(OEVBButton)button forPlayer:(NSUInteger)player;
+- (void)didPushVBButton:(PVVBButton)button forPlayer:(NSInteger)player;
 {
     inputBuffer[player][0] |= 1 << VBMap[button];
 }
 
-- (oneway void)didReleaseVBButton:(OEVBButton)button forPlayer:(NSUInteger)player;
+- (void)didReleaseVBButton:(PVVBButton)button forPlayer:(NSInteger)player;
 {
     inputBuffer[player][0] &= ~(1 << VBMap[button]);
 }
 
 #pragma mark WonderSwan
-- (oneway void)didPushWSButton:(OEWSButton)button forPlayer:(NSUInteger)player;
+- (void)didPushWSButton:(PVWSButton)button forPlayer:(NSInteger)player;
 {
     inputBuffer[player][0] |= 1 << WSMap[button];
 }
 
-- (oneway void)didReleaseWSButton:(OEWSButton)button forPlayer:(NSUInteger)player;
+- (void)didReleaseWSButton:(PVWSButton)button forPlayer:(NSInteger)player;
 {
     inputBuffer[player][0] &= ~(1 << WSMap[button]);
 }
@@ -1521,33 +1339,56 @@ const int NeoMap[]  = { 0, 1, 2, 3, 4, 5, 6};
     
     if (player == 0) {
         controller = self.controller1;
-    } else {
+    }
+    else if (player == 1) {
         controller = self.controller2;
     }
-    
-    switch (systemType) {
-        case neogeo:
+    else if (player == 2) {
+        controller = self.controller3;
+    }
+    else if (player == 3) {
+        controller = self.controller4;
+    }
+        
+	switch (self.systemType) {
+		case MednaSystemSMS:
+		case MednaSystemMD:
+			// TODO: Unused since Mednafen sega support is 'low priority'
+			return 0;
+			break;
+		case MednaSystemGB:
+			return [self GBValueForButtonID:buttonID forController:controller];
+			break;
+		case MednaSystemGBA:
+			return [self GBAValueForButtonID:buttonID forController:controller];
+			break;
+		case MednaSystemSNES:
+			return [self SNESValueForButtonID:buttonID forController:controller];
+			break;
+		case MednaSystemNES:
+			return [self NESValueForButtonID:buttonID forController:controller];
+			break;
+        case MednaSystemNeoGeo:
             return [self NeoGeoValueForButtonID:buttonID forController:controller];
             break;
-
-        case lynx:
+        case MednaSystemLynx:
             return [self LynxControllerValueForButtonID:buttonID forController:controller];
             break;
 
-        case pce:
-        case pcfx:
+        case MednaSystemPCE:
+        case MednaSystemPCFX:
             return [self PCEValueForButtonID:buttonID forController:controller];
             break;
 
-        case psx:
+        case MednaSystemPSX:
             return [self PSXcontrollerValueForButtonID:buttonID forController:controller];
             break;
 
-        case vb:
+        case MednaSystemVirtualBoy:
             return [self VirtualBoyControllerValueForButtonID:buttonID forController:controller];
             break;
 
-        case wswan:
+        case MednaSystemWonderSwan:
             return [self WonderSwanControllerValueForButtonID:buttonID forController:controller];
             break;
             
@@ -1558,24 +1399,390 @@ const int NeoMap[]  = { 0, 1, 2, 3, 4, 5, 6};
     return 0;
 }
 
+- (NSInteger)GBValueForButtonID:(unsigned)buttonID forController:(GCController*)controller {
+	if ([controller extendedGamepad]) {
+		GCExtendedGamepad *pad = [controller extendedGamepad];
+		GCControllerDirectionPad *dpad = [pad dpad];
+		switch (buttonID) {
+			case PVGBButtonUp:
+				return [[dpad up] isPressed]?:[[[pad leftThumbstick] up] isPressed];
+			case PVGBButtonDown:
+				return [[dpad down] isPressed]?:[[[pad leftThumbstick] down] isPressed];
+			case PVGBButtonLeft:
+				return [[dpad left] isPressed]?:[[[pad leftThumbstick] left] isPressed];
+			case PVGBButtonRight:
+				return [[dpad right] isPressed]?:[[[pad leftThumbstick] right] isPressed];
+			case PVGBButtonB:
+				return [[pad buttonA] isPressed]?:[[pad buttonY] isPressed];
+			case PVGBButtonA:
+				return [[pad buttonB] isPressed]?:[[pad buttonX] isPressed];
+			case PVGBButtonSelect:
+				return [[pad leftShoulder] isPressed]?:[[pad leftTrigger] isPressed];
+			case PVGBButtonStart:
+				return [[pad rightShoulder] isPressed]?:[[pad rightTrigger] isPressed];
+			default:
+				NSLog(@"Unknown button %i", buttonID);
+				break;
+		}
+
+//		if (buttonID == GBMap[PVGBButtonUp]) {
+//			return [[dpad up] isPressed]?:[[[pad leftThumbstick] up] isPressed];
+//		}
+//		else if (buttonID == GBMap[PVGBButtonDown]) {
+//			return [[dpad down] isPressed]?:[[[pad leftThumbstick] down] isPressed];
+//		}
+//		else if (buttonID == GBMap[PVGBButtonLeft]) {
+//			return [[dpad left] isPressed]?:[[[pad leftThumbstick] left] isPressed];
+//		}
+//		else if (buttonID == GBMap[PVGBButtonRight]) {
+//			return [[dpad right] isPressed]?:[[[pad leftThumbstick] right] isPressed];
+//		}
+//		else if (buttonID == GBMap[PVGBButtonA]) {
+//			return [[pad buttonB] isPressed]?:[[pad buttonX] isPressed];
+//		}
+//		else if (buttonID == GBMap[PVGBButtonB]) {
+//			return [[pad buttonA] isPressed]?:[[pad buttonY] isPressed];
+//		}
+//		else if (buttonID == GBMap[PVGBButtonSelect]) {
+//			return [[pad leftShoulder] isPressed]?:[[pad leftTrigger] isPressed];
+//		}
+//		else if (buttonID == GBMap[PVGBButtonStart]) {
+//			return [[pad rightShoulder] isPressed]?:[[pad rightTrigger] isPressed];
+//		}
+	} else if ([controller gamepad]) {
+		GCGamepad *pad = [controller gamepad];
+		GCControllerDirectionPad *dpad = [pad dpad];
+		switch (buttonID) {
+			case PVGBButtonUp:
+				return [[dpad up] isPressed];
+			case PVGBButtonDown:
+				return [[dpad down] isPressed];
+			case PVGBButtonLeft:
+				return [[dpad left] isPressed];
+			case PVGBButtonRight:
+				return [[dpad right] isPressed];
+			case PVGBButtonB:
+				return [[pad buttonA] isPressed]?:[[pad buttonY] isPressed];
+			case PVGBButtonA:
+				return [[pad buttonB] isPressed]?:[[pad buttonX] isPressed];
+			case PVGBButtonSelect:
+				return [[pad leftShoulder] isPressed];
+			case PVGBButtonStart:
+				return [[pad rightShoulder] isPressed];
+			default:
+				break;
+		}
+	}
+#if TARGET_OS_TV
+	else if ([controller microGamepad])
+	{
+		GCMicroGamepad *pad = [controller microGamepad];
+		GCControllerDirectionPad *dpad = [pad dpad];
+		switch (buttonID) {
+			case PVGBButtonUp:
+				return [[dpad up] value] > 0.5;
+				break;
+			case PVGBButtonDown:
+				return [[dpad down] value] > 0.5;
+				break;
+			case PVGBButtonLeft:
+				return [[dpad left] value] > 0.5;
+				break;
+			case PVGBButtonRight:
+				return [[dpad right] value] > 0.5;
+				break;
+			case PVGBButtonA:
+				return [[pad buttonX] isPressed];
+				break;
+			case PVGBButtonB:
+				return [[pad buttonA] isPressed];
+				break;
+			default:
+				break;
+		}
+	}
+#endif
+	return 0;
+}
+
+- (NSInteger)GBAValueForButtonID:(unsigned)buttonID forController:(GCController*)controller {
+	if ([controller extendedGamepad]) {
+		GCExtendedGamepad *pad = [controller extendedGamepad];
+		GCControllerDirectionPad *dpad = [pad dpad];
+		switch (buttonID) {
+			case PVGBAButtonUp:
+				return [[dpad up] isPressed]?:[[[pad leftThumbstick] up] isPressed];
+			case PVGBAButtonDown:
+				return [[dpad down] isPressed]?:[[[pad leftThumbstick] down] isPressed];
+			case PVGBAButtonLeft:
+				return [[dpad left] isPressed]?:[[[pad leftThumbstick] left] isPressed];
+			case PVGBAButtonRight:
+				return [[dpad right] isPressed]?:[[[pad leftThumbstick] right] isPressed];
+			case PVGBAButtonB:
+				return [[pad buttonA] isPressed]?:[[pad buttonY] isPressed];
+			case PVGBAButtonA:
+				return [[pad buttonB] isPressed]?:[[pad buttonX] isPressed];
+			case PVGBAButtonL:
+				return [[pad leftShoulder] isPressed];
+			case PVGBAButtonR:
+				return [[pad rightShoulder] isPressed];
+			case PVGBAButtonSelect:
+				return [[pad leftTrigger] isPressed];
+			case PVGBAButtonStart:
+				return [[pad rightTrigger] isPressed];
+			default:
+				break;
+		}
+	} else if ([controller gamepad]) {
+		GCGamepad *pad = [controller gamepad];
+		GCControllerDirectionPad *dpad = [pad dpad];
+		switch (buttonID) {
+			case PVGBAButtonUp:
+				return [[dpad up] isPressed];
+			case PVGBAButtonDown:
+				return [[dpad down] isPressed];
+			case PVGBAButtonLeft:
+				return [[dpad left] isPressed];
+			case PVGBAButtonRight:
+				return [[dpad right] isPressed];
+			case PVGBAButtonB:
+				return [[pad buttonA] isPressed];
+			case PVGBAButtonA:
+				return [[pad buttonB] isPressed];
+			case PVGBAButtonL:
+				return [[pad leftShoulder] isPressed];
+			case PVGBAButtonR:
+				return [[pad rightShoulder] isPressed];
+			case PVGBAButtonSelect:
+				return [[pad buttonX] isPressed];
+			case PVGBAButtonStart:
+				return [[pad buttonY] isPressed];
+			default:
+				break;
+		}
+	}
+#if TARGET_OS_TV
+	else if ([controller microGamepad])
+	{
+		GCMicroGamepad *pad = [controller microGamepad];
+		GCControllerDirectionPad *dpad = [pad dpad];
+		switch (buttonID) {
+			case PVGBAButtonUp:
+				return [[dpad up] value] > 0.5;
+				break;
+			case PVGBAButtonDown:
+				return [[dpad down] value] > 0.5;
+				break;
+			case PVGBAButtonLeft:
+				return [[dpad left] value] > 0.5;
+				break;
+			case PVGBAButtonRight:
+				return [[dpad right] value] > 0.5;
+				break;
+			case PVGBAButtonA:
+				return [[pad buttonX] isPressed];
+				break;
+			case PVGBAButtonB:
+				return [[pad buttonA] isPressed];
+				break;
+			default:
+				break;
+		}
+	}
+#endif
+	return 0;
+}
+
+- (NSInteger)SNESValueForButtonID:(unsigned)buttonID forController:(GCController*)controller {
+	if ([controller extendedGamepad]) {
+		GCExtendedGamepad *pad = [controller extendedGamepad];
+		GCControllerDirectionPad *dpad = [pad dpad];
+		switch (buttonID) {
+			case PVSNESButtonUp:
+				return [[dpad up] isPressed]?:[[[pad leftThumbstick] up] isPressed];
+			case PVSNESButtonDown:
+				return [[dpad down] isPressed]?:[[[pad leftThumbstick] down] isPressed];
+			case PVSNESButtonLeft:
+				return [[dpad left] isPressed]?:[[[pad leftThumbstick] left] isPressed];
+			case PVSNESButtonRight:
+				return [[dpad right] isPressed]?:[[[pad leftThumbstick] right] isPressed];
+			case PVSNESButtonB:
+				return [[pad buttonA] isPressed];
+			case PVSNESButtonA:
+				return [[pad buttonB] isPressed];
+			case PVSNESButtonX:
+				return [[pad buttonY] isPressed];
+			case PVSNESButtonY:
+				return [[pad buttonX] isPressed];
+			case PVSNESButtonTriggerLeft:
+				return [[pad leftShoulder] isPressed];
+			case PVSNESButtonTriggerRight:
+				return [[pad rightShoulder] isPressed];
+			case PVSNESButtonSelect:
+				return [[pad leftTrigger] isPressed];
+			case PVSNESButtonStart:
+				return [[pad rightTrigger] isPressed];
+			default:
+				break;
+		}
+	} else if ([controller gamepad]) {
+		GCGamepad *pad = [controller gamepad];
+		GCControllerDirectionPad *dpad = [pad dpad];
+		switch (buttonID) {
+			case PVSNESButtonUp:
+				return [[dpad up] isPressed];
+			case PVSNESButtonDown:
+				return [[dpad down] isPressed];
+			case PVSNESButtonLeft:
+				return [[dpad left] isPressed];
+			case PVSNESButtonRight:
+				return [[dpad right] isPressed];
+			case PVSNESButtonB:
+				return [[pad buttonA] isPressed];
+			case PVSNESButtonA:
+				return [[pad buttonB] isPressed];
+			case PVSNESButtonX:
+				return [[pad buttonY] isPressed];
+			case PVSNESButtonY:
+				return [[pad buttonX] isPressed];
+			case PVSNESButtonTriggerLeft:
+				return [[pad leftShoulder] isPressed];
+			case PVSNESButtonTriggerRight:
+				return [[pad rightShoulder] isPressed];
+			default:
+				break;
+		}
+	}
+#if TARGET_OS_TV
+	else if ([controller microGamepad])
+	{
+		GCMicroGamepad *pad = [controller microGamepad];
+		GCControllerDirectionPad *dpad = [pad dpad];
+		switch (buttonID) {
+			case PVSNESButtonUp:
+				return [[dpad up] value] > 0.5;
+				break;
+			case PVSNESButtonDown:
+				return [[dpad down] value] > 0.5;
+				break;
+			case PVSNESButtonLeft:
+				return [[dpad left] value] > 0.5;
+				break;
+			case PVSNESButtonRight:
+				return [[dpad right] value] > 0.5;
+				break;
+			case PVSNESButtonA:
+				return [[pad buttonX] isPressed];
+				break;
+			case PVSNESButtonB:
+				return [[pad buttonA] isPressed];
+				break;
+			default:
+				break;
+		}
+	}
+#endif
+	return 0;
+}
+
+- (NSInteger)NESValueForButtonID:(unsigned)buttonID forController:(GCController*)controller {
+	if ([controller extendedGamepad]) {
+		GCExtendedGamepad *pad = [controller extendedGamepad];
+		GCControllerDirectionPad *dpad = [pad dpad];
+		switch (buttonID) {
+			case PVNESButtonUp:
+				return [[dpad up] isPressed]?:[[[pad leftThumbstick] up] isPressed];
+			case PVNESButtonDown:
+				return [[dpad down] isPressed]?:[[[pad leftThumbstick] down] isPressed];
+			case PVNESButtonLeft:
+				return [[dpad left] isPressed]?:[[[pad leftThumbstick] left] isPressed];
+			case PVNESButtonRight:
+				return [[dpad right] isPressed]?:[[[pad leftThumbstick] right] isPressed];
+			case PVNESButtonB:
+				return [[pad buttonA] isPressed]?:[[pad buttonY] isPressed];
+			case PVNESButtonA:
+				return [[pad buttonB] isPressed]?:[[pad buttonX] isPressed];
+			case PVNESButtonSelect:
+				return [[pad leftShoulder] isPressed]?:[[pad leftTrigger] isPressed];
+			case PVNESButtonStart:
+				return [[pad rightShoulder] isPressed]?:[[pad rightTrigger] isPressed];
+			default:
+				break;
+		}
+	} else if ([controller gamepad]) {
+		GCGamepad *pad = [controller gamepad];
+		GCControllerDirectionPad *dpad = [pad dpad];
+		switch (buttonID) {
+			case PVNESButtonUp:
+				return [[dpad up] isPressed];
+			case PVNESButtonDown:
+				return [[dpad down] isPressed];
+			case PVNESButtonLeft:
+				return [[dpad left] isPressed];
+			case PVNESButtonRight:
+				return [[dpad right] isPressed];
+			case PVNESButtonB:
+				return [[pad buttonA] isPressed]?:[[pad buttonY] isPressed];
+			case PVNESButtonA:
+				return [[pad buttonB] isPressed]?:[[pad buttonX] isPressed];
+			case PVNESButtonSelect:
+				return [[pad leftShoulder] isPressed];
+			case PVNESButtonStart:
+				return [[pad rightShoulder] isPressed];
+			default:
+				break;
+		}
+	}
+#if TARGET_OS_TV
+	else if ([controller microGamepad])
+	{
+		GCMicroGamepad *pad = [controller microGamepad];
+		GCControllerDirectionPad *dpad = [pad dpad];
+		switch (buttonID) {
+			case PVNESButtonUp:
+				return [[dpad up] value] > 0.5;
+				break;
+			case PVNESButtonDown:
+				return [[dpad down] value] > 0.5;
+				break;
+			case PVNESButtonLeft:
+				return [[dpad left] value] > 0.5;
+				break;
+			case PVNESButtonRight:
+				return [[dpad right] value] > 0.5;
+				break;
+			case PVNESButtonA:
+				return [[pad buttonX] isPressed];
+				break;
+			case PVNESButtonB:
+				return [[pad buttonA] isPressed];
+				break;
+			default:
+				break;
+		}
+	}
+#endif
+	return 0;
+}
+
 - (NSInteger)NeoGeoValueForButtonID:(unsigned)buttonID forController:(GCController*)controller {
     if ([controller extendedGamepad]) {
         GCExtendedGamepad *pad = [controller extendedGamepad];
         GCControllerDirectionPad *dpad = [pad dpad];
         switch (buttonID) {
-            case OENGPButtonUp:
+            case PVNGPButtonUp:
                 return [[dpad up] isPressed]?:[[[pad leftThumbstick] up] isPressed];
-            case OENGPButtonDown:
+            case PVNGPButtonDown:
                 return [[dpad down] isPressed]?:[[[pad leftThumbstick] down] isPressed];
-            case OENGPButtonLeft:
+            case PVNGPButtonLeft:
                 return [[dpad left] isPressed]?:[[[pad leftThumbstick] left] isPressed];
-            case OENGPButtonRight:
+            case PVNGPButtonRight:
                 return [[dpad right] isPressed]?:[[[pad leftThumbstick] right] isPressed];
-            case OENGPButtonB:
+            case PVNGPButtonB:
                 return [[pad buttonB] isPressed]?:[[pad buttonX] isPressed];
-            case OENGPButtonA:
+            case PVNGPButtonA:
                 return [[pad buttonA] isPressed]?:[[pad buttonY] isPressed];
-            case OENGPButtonOption:
+            case PVNGPButtonOption:
                 return [[pad leftShoulder] isPressed]?:[[pad leftTrigger] isPressed] ?: [[pad rightShoulder] isPressed]?:[[pad rightTrigger] isPressed];
             default:
                 break;
@@ -1584,19 +1791,19 @@ const int NeoMap[]  = { 0, 1, 2, 3, 4, 5, 6};
         GCGamepad *pad = [controller gamepad];
         GCControllerDirectionPad *dpad = [pad dpad];
         switch (buttonID) {
-            case OENGPButtonUp:
+            case PVNGPButtonUp:
                 return [[dpad up] isPressed];
-            case OENGPButtonDown:
+            case PVNGPButtonDown:
                 return [[dpad down] isPressed];
-            case OENGPButtonLeft:
+            case PVNGPButtonLeft:
                 return [[dpad left] isPressed];
-            case OENGPButtonRight:
+            case PVNGPButtonRight:
                 return [[dpad right] isPressed];
-            case OENGPButtonB:
+            case PVNGPButtonB:
                 return [[pad buttonB] isPressed]?:[[pad buttonX] isPressed];
-            case OENGPButtonA:
+            case PVNGPButtonA:
                 return [[pad buttonA] isPressed]?:[[pad buttonY] isPressed];
-            case OENGPButtonOption:
+            case PVNGPButtonOption:
                 return [[pad leftShoulder] isPressed] ?: [[pad rightShoulder] isPressed];
             default:
                 break;
@@ -1608,22 +1815,22 @@ const int NeoMap[]  = { 0, 1, 2, 3, 4, 5, 6};
         GCMicroGamepad *pad = [controller microGamepad];
         GCControllerDirectionPad *dpad = [pad dpad];
         switch (buttonID) {
-            case OENGPButtonUp:
+            case PVNGPButtonUp:
                 return [[dpad up] value] > 0.5;
                 break;
-            case OENGPButtonDown:
+            case PVNGPButtonDown:
                 return [[dpad down] value] > 0.5;
                 break;
-            case OENGPButtonLeft:
+            case PVNGPButtonLeft:
                 return [[dpad left] value] > 0.5;
                 break;
-            case OENGPButtonRight:
+            case PVNGPButtonRight:
                 return [[dpad right] value] > 0.5;
                 break;
-            case OENGPButtonA:
+            case PVNGPButtonA:
                 return [[pad buttonA] isPressed];
                 break;
-            case OENGPButtonB:
+            case PVNGPButtonB:
                 return [[pad buttonX] isPressed];
                 break;
             default:
@@ -1640,30 +1847,40 @@ const int NeoMap[]  = { 0, 1, 2, 3, 4, 5, 6};
         GCExtendedGamepad *gamePad = [controller extendedGamepad];
         GCControllerDirectionPad *dpad = [gamePad dpad];
         switch (buttonID) {
-            case OEPCEButtonUp:
-                return [[dpad up] isPressed]?:[[[gamePad leftThumbstick] up] isPressed];
-            case OEPCEButtonDown:
-                return [[dpad down] isPressed]?:[[[gamePad leftThumbstick] down] isPressed];
-            case OEPCEButtonLeft:
-                return [[dpad left] isPressed]?:[[[gamePad leftThumbstick] left] isPressed];
-            case OEPCEButtonRight:
-                return [[dpad right] isPressed]?:[[[gamePad leftThumbstick] right] isPressed];
-            case OEPCEButton3:
+				// D-Pad
+			case PVPCEButtonUp:
+                return [[dpad up] isPressed]?:[[[gamePad leftThumbstick] up] value] > 0.1;
+            case PVPCEButtonDown:
+                return [[dpad down] isPressed]?:[[[gamePad leftThumbstick] down] value] > 0.1;
+            case PVPCEButtonLeft:
+                return [[dpad left] isPressed]?:[[[gamePad leftThumbstick] left] value] > 0.1;
+            case PVPCEButtonRight:
+                return [[dpad right] isPressed]?:[[[gamePad leftThumbstick] right] value] > 0.1;
+
+				// Standard Buttons
+			case PVPCEButtonButton1:
+				return [[gamePad buttonB] isPressed];
+			case PVPCEButtonButton2:
+				return [[gamePad buttonA] isPressed];
+
+			case PVPCEButtonSelect:
+				return [[gamePad leftTrigger] isPressed];
+			case PVPCEButtonRun:
+				return [[gamePad rightTrigger] isPressed];
+
+				// Extended Buttons
+			case PVPCEButtonButton3:
                 return [[gamePad buttonX] isPressed];
-            case OEPCEButton2:
-                return [[gamePad buttonA] isPressed];
-            case OEPCEButton1:
-                return [[gamePad buttonB] isPressed];
-            case OEPCEButton4:
+            case PVPCEButtonButton4:
                 return [[gamePad leftShoulder] isPressed];
-            case OEPCEButton5:
+            case PVPCEButtonButton5:
                 return [[gamePad buttonY] isPressed];
-            case OEPCEButton6:
+            case PVPCEButtonButton6:
                 return [[gamePad rightShoulder] isPressed];
-            case OEPCEButtonMode:
-                return [[gamePad leftTrigger] isPressed];
-            case OEPCEButtonRun:
-                return [[gamePad leftTrigger] isPressed];
+
+                // Toggle the Mode: Extended Buttons are pressed
+            case PVPCEButtonMode:
+                return [[gamePad buttonX] isPressed] || [[gamePad leftShoulder] isPressed] || [[gamePad buttonY] isPressed] || [[gamePad rightShoulder] isPressed];
             default:
                 break;
         }
@@ -1673,26 +1890,36 @@ const int NeoMap[]  = { 0, 1, 2, 3, 4, 5, 6};
         GCGamepad *gamePad = [controller gamepad];
         GCControllerDirectionPad *dpad = [gamePad dpad];
         switch (buttonID) {
-            case OEPCEButtonUp:
+                // D-Pad
+            case PVPCEButtonUp:
                 return [[dpad up] isPressed];
-            case OEPCEButtonDown:
+            case PVPCEButtonDown:
                 return [[dpad down] isPressed];
-            case OEPCEButtonLeft:
+            case PVPCEButtonLeft:
                 return [[dpad left] isPressed];
-            case OEPCEButtonRight:
+            case PVPCEButtonRight:
                 return [[dpad right] isPressed];
-            case OEPCEButton3:
+                
+				// Standard Buttons
+			case PVPCEButtonButton1:
+				return [[gamePad buttonB] isPressed];
+			case PVPCEButtonButton2:
+				return [[gamePad buttonA] isPressed];
+
+			case PVPCEButtonSelect:
+				return [[gamePad leftShoulder] isPressed];
+			case PVPCEButtonRun:
+				return [[gamePad rightShoulder] isPressed];
+
+				// Extended Buttons
+            case PVPCEButtonButton3:
                 return [[gamePad buttonX] isPressed];
-            case OEPCEButton2:
-                return [[gamePad buttonA] isPressed];
-            case OEPCEButton1:
-                return [[gamePad buttonB] isPressed];
-            case OEPCEButton4:
-                return [[gamePad leftShoulder] isPressed];
-            case OEPCEButton5:
+            case PVPCEButtonButton4:
                 return [[gamePad buttonY] isPressed];
-            case OEPCEButton6:
-                return [[gamePad rightShoulder] isPressed];
+
+                // Toggle the Mode: Extended Buttons are pressed
+			case PVPCEButtonMode:
+				return [[gamePad buttonX] isPressed] || [[gamePad buttonY] isPressed];
             default:
                 break;
         }
@@ -1703,22 +1930,22 @@ const int NeoMap[]  = { 0, 1, 2, 3, 4, 5, 6};
         GCMicroGamepad *gamePad = [controller microGamepad];
         GCControllerDirectionPad *dpad = [gamePad dpad];
         switch (buttonID) {
-            case OEPCEButtonUp:
+            case PVPCEButtonUp:
                 return [[dpad up] value] > 0.5;
                 break;
-            case OEPCEButtonDown:
+            case PVPCEButtonDown:
                 return [[dpad down] value] > 0.5;
                 break;
-            case OEPCEButtonLeft:
+            case PVPCEButtonLeft:
                 return [[dpad left] value] > 0.5;
                 break;
-            case OEPCEButtonRight:
+            case PVPCEButtonRight:
                 return [[dpad right] value] > 0.5;
                 break;
-            case OEPCEButton2:
+            case PVPCEButtonButton1:
                 return [[gamePad buttonA] isPressed];
                 break;
-            case OEPCEButton1:
+            case PVPCEButtonButton2:
                 return [[gamePad buttonX] isPressed];
                 break;
             default:
@@ -1735,22 +1962,36 @@ const int NeoMap[]  = { 0, 1, 2, 3, 4, 5, 6};
     {
         GCExtendedGamepad *pad = [controller extendedGamepad];
         switch (buttonID) {
-            case OEPSXLeftAnalogUp:
+            case PVPSXButtonLeftAnalogUp:
                 return [pad leftThumbstick].up.value;
-            case OEPSXLeftAnalogDown:
+            case PVPSXButtonLeftAnalogDown:
                 return [pad leftThumbstick].down.value;
-            case OEPSXLeftAnalogLeft:
+            case PVPSXButtonLeftAnalogLeft:
                 return [pad leftThumbstick].left.value;
-            case OEPSXLeftAnalogRight:
+            case PVPSXButtonLeftAnalogRight:
                 return [pad leftThumbstick].right.value;
-            case OEPSXRightAnalogUp:
+            case PVPSXButtonRightAnalogUp:
                 return [pad rightThumbstick].up.value;
-            case OEPSXRightAnalogDown:
+            case PVPSXButtonRightAnalogDown:
                 return [pad rightThumbstick].down.value;
-            case OEPSXRightAnalogLeft:
+            case PVPSXButtonRightAnalogLeft:
                 return [pad rightThumbstick].left.value;
-            case OEPSXRightAnalogRight:
+            case PVPSXButtonRightAnalogRight:
                 return [pad rightThumbstick].right.value;
+            default:
+                break;
+        }
+    } else if ([controller gamepad]) {
+        GCGamepad *pad = [controller gamepad];
+        switch (buttonID) {
+            case PVPSXButtonLeftAnalogUp:
+                return [pad dpad].up.value;
+            case PVPSXButtonLeftAnalogDown:
+                return [pad dpad].down.value;
+            case PVPSXButtonLeftAnalogLeft:
+                return [pad dpad].left.value;
+            case PVPSXButtonLeftAnalogRight:
+                return [pad dpad].right.value;
             default:
                 break;
         }
@@ -1772,13 +2013,13 @@ const int NeoMap[]  = { 0, 1, 2, 3, 4, 5, 6};
                 return [[dpad left] isPressed];
             case PVPSXButtonRight:
                 return [[dpad right] isPressed];
-            case OEPSXLeftAnalogUp:
+            case PVPSXButtonLeftAnalogUp:
                 return [pad leftThumbstick].up.value;
-            case OEPSXLeftAnalogDown:
+            case PVPSXButtonLeftAnalogDown:
                 return [pad leftThumbstick].down.value;
-            case OEPSXLeftAnalogLeft:
+            case PVPSXButtonLeftAnalogLeft:
                 return [pad leftThumbstick].left.value;
-            case OEPSXLeftAnalogRight:
+            case PVPSXButtonLeftAnalogRight:
                 return [pad leftThumbstick].right.value;
             case PVPSXButtonSquare:
                 return [[pad buttonX] isPressed];
@@ -1829,6 +2070,10 @@ const int NeoMap[]  = { 0, 1, 2, 3, 4, 5, 6};
                 return [[pad buttonY] isPressed];
             case PVPSXButtonR1:
                 return [[pad rightShoulder] isPressed];
+            case PVPSXButtonStart:
+                return self.isStartPressed;
+            case PVPSXButtonSelect:
+                return self.isSelectPressed;
             default:
                 break;
         }
@@ -1871,34 +2116,34 @@ const int NeoMap[]  = { 0, 1, 2, 3, 4, 5, 6};
         GCExtendedGamepad *pad = [controller extendedGamepad];
         GCControllerDirectionPad *dpad = [pad dpad];
         switch (buttonID) {
-            case OEVBButtonLeftUp:
+            case PVVBButtonLeftUp:
                 return [[dpad up] isPressed]?:[[[pad leftThumbstick] up] isPressed];
-            case OEVBButtonLeftDown:
+            case PVVBButtonLeftDown:
                 return [[dpad down] isPressed]?:[[[pad leftThumbstick] down] isPressed];
-            case OEVBButtonLeftLeft:
+            case PVVBButtonLeftLeft:
                 return [[dpad left] isPressed]?:[[[pad leftThumbstick] left] isPressed];
-            case OEVBButtonLeftRight:
+            case PVVBButtonLeftRight:
                 return [[dpad right] isPressed]?:[[[pad leftThumbstick] right] isPressed];
-            case OEVBButtonRightUp:
+            case PVVBButtonRightUp:
                 return [[[pad rightThumbstick] up] isPressed];
-            case OEVBButtonRightDown:
+            case PVVBButtonRightDown:
                 return [[[pad rightThumbstick] down] isPressed];
-            case OEVBButtonRightLeft:
+            case PVVBButtonRightLeft:
                 return [[[pad rightThumbstick] left] isPressed];
-            case OEVBButtonRightRight:
+            case PVVBButtonRightRight:
                 return [[[pad rightThumbstick] right] isPressed];
-            case OEVBButtonB:
+            case PVVBButtonA:
                 return [[pad buttonB] isPressed]?:[[pad buttonX] isPressed];
-            case OEVBButtonA:
+            case PVVBButtonB:
                 return [[pad buttonA] isPressed]?:[[pad buttonY] isPressed];
-            case OEVBButtonL:
+            case PVVBButtonL:
                 return [[pad leftShoulder] isPressed];
-            case OEVBButtonR:
+            case PVVBButtonR:
                 return [[pad rightShoulder] isPressed];
-            case OEVBButtonStart:
-                return [[pad leftTrigger] isPressed];
-            case OEVBButtonSelect:
+            case PVVBButtonStart:
                 return [[pad rightTrigger] isPressed];
+            case PVVBButtonSelect:
+                return [[pad leftTrigger] isPressed];
             default:
                 break;
         }
@@ -1908,26 +2153,26 @@ const int NeoMap[]  = { 0, 1, 2, 3, 4, 5, 6};
         GCGamepad *pad = [controller gamepad];
         GCControllerDirectionPad *dpad = [pad dpad];
         switch (buttonID) {
-            case OEVBButtonLeftUp:
+            case PVVBButtonLeftUp:
                 return [[dpad up] isPressed];
-            case OEVBButtonLeftDown:
+            case PVVBButtonLeftDown:
                 return [[dpad down] isPressed];
-            case OEVBButtonLeftLeft:
+            case PVVBButtonLeftLeft:
                 return [[dpad left] isPressed];
-            case OEVBButtonLeftRight:
+            case PVVBButtonLeftRight:
                 return [[dpad right] isPressed];
-            case OEVBButtonB:
+            case PVVBButtonA:
                 return [[pad buttonB] isPressed];
-            case OEVBButtonA:
+            case PVVBButtonB:
                 return [[pad buttonA] isPressed];
-            case OEVBButtonL:
+            case PVVBButtonL:
                 return [[pad leftShoulder] isPressed];
-            case OEVBButtonR:
+            case PVVBButtonR:
                 return [[pad rightShoulder] isPressed];
-            case OEVBButtonStart:
-                return [[pad buttonX] isPressed];
-            case OEVBButtonSelect:
+            case PVVBButtonStart:
                 return [[pad buttonY] isPressed];
+            case PVVBButtonSelect:
+                return [[pad buttonX] isPressed];
             default:
                 break;
         }
@@ -1938,22 +2183,22 @@ const int NeoMap[]  = { 0, 1, 2, 3, 4, 5, 6};
         GCMicroGamepad *pad = [controller microGamepad];
         GCControllerDirectionPad *dpad = [pad dpad];
         switch (buttonID) {
-            case OEVBButtonLeftUp:
+            case PVVBButtonLeftUp:
                 return [[dpad up] value] > 0.5;
                 break;
-            case OEVBButtonLeftDown:
+            case PVVBButtonLeftDown:
                 return [[dpad down] value] > 0.5;
                 break;
-            case OEVBButtonLeftLeft:
+            case PVVBButtonLeftLeft:
                 return [[dpad left] value] > 0.5;
                 break;
-            case OEVBButtonLeftRight:
+            case PVVBButtonLeftRight:
                 return [[dpad right] value] > 0.5;
                 break;
-            case OEVBButtonA:
+            case PVVBButtonA:
                 return [[pad buttonA] isPressed];
                 break;
-            case OEVBButtonB:
+            case PVVBButtonB:
                 return [[pad buttonX] isPressed];
                 break;
             default:
@@ -1976,29 +2221,29 @@ const int NeoMap[]  = { 0, 1, 2, 3, 4, 5, 6};
                  left JoyStick, but if the games require using Left/Right hand at same time it
                  may be difficult to his the right d-pad and action buttons at the same time.
                  -joe M */
-            case OEWSButtonX1:
+            case PVWSButtonX1:
                 return [[[pad leftThumbstick] up] isPressed];
-            case OEWSButtonX3:
+            case PVWSButtonX3:
                 return [[[pad leftThumbstick] down] isPressed];
-            case OEWSButtonX4:
+            case PVWSButtonX4:
                 return [[[pad leftThumbstick] left] isPressed];
-            case OEWSButtonX2:
+            case PVWSButtonX2:
                 return [[[pad leftThumbstick] right] isPressed];
-            case OEWSButtonY1:
+            case PVWSButtonY1:
                 return [[dpad up] isPressed];
-            case OEWSButtonY3:
+            case PVWSButtonY3:
                 return [[dpad down] isPressed];
-            case OEWSButtonY4:
+            case PVWSButtonY4:
                 return [[dpad left] isPressed];
-            case OEWSButtonY2:
+            case PVWSButtonY2:
                 return [[dpad right] isPressed];
-            case OEWSButtonA:
-                return [[pad buttonX] isPressed];
-            case OEWSButtonB:
-                return [[pad buttonA] isPressed];
-            case OEWSButtonStart:
-                return [[pad buttonB] isPressed];
-            case OEWSButtonSound:
+            case PVWSButtonA:
+                return [[pad buttonB] isPressed]?:[[pad buttonX] isPressed];
+            case PVWSButtonB:
+                return [[pad buttonA] isPressed]?:[[pad buttonY] isPressed];
+            case PVWSButtonStart:
+                return [[pad rightShoulder] isPressed]?:[[pad rightTrigger] isPressed];
+            case PVWSButtonSound:
                 return [[pad leftShoulder] isPressed];
             default:
                 break;
@@ -2009,21 +2254,21 @@ const int NeoMap[]  = { 0, 1, 2, 3, 4, 5, 6};
         GCGamepad *pad = [controller gamepad];
         GCControllerDirectionPad *dpad = [pad dpad];
         switch (buttonID) {
-            case OEWSButtonX1:
+            case PVWSButtonX1:
                 return [[dpad up] isPressed];
-            case OEWSButtonX3:
+            case PVWSButtonX3:
                 return [[dpad down] isPressed];
-            case OEWSButtonX4:
+            case PVWSButtonX4:
                 return [[dpad left] isPressed];
-            case OEWSButtonX2:
+            case PVWSButtonX2:
                 return [[dpad right] isPressed];
-            case OEWSButtonA:
-                return [[pad buttonX] isPressed];
-            case OEWSButtonB:
-                return [[pad buttonA] isPressed];
-            case OEWSButtonStart:
-                return [[pad buttonB] isPressed];
-            case OEWSButtonSound:
+            case PVWSButtonA:
+                return [[pad buttonB] isPressed]?:[[pad buttonX] isPressed];
+            case PVWSButtonB:
+                return [[pad buttonA] isPressed]?:[[pad buttonY] isPressed];
+            case PVWSButtonStart:
+                return [[pad rightShoulder] isPressed];
+            case PVWSButtonSound:
                 return [[pad leftShoulder] isPressed];
             default:
                 break;
@@ -2035,22 +2280,22 @@ const int NeoMap[]  = { 0, 1, 2, 3, 4, 5, 6};
         GCMicroGamepad *pad = [controller microGamepad];
         GCControllerDirectionPad *dpad = [pad dpad];
         switch (buttonID) {
-            case OEWSButtonX1:
+            case PVWSButtonX1:
                 return [[dpad up] value] > 0.5;
                 break;
-            case OEWSButtonX3:
+            case PVWSButtonX3:
                 return [[dpad down] value] > 0.5;
                 break;
-            case OEWSButtonX4:
+            case PVWSButtonX4:
                 return [[dpad left] value] > 0.5;
                 break;
-            case OEWSButtonX2:
+            case PVWSButtonX2:
                 return [[dpad right] value] > 0.5;
                 break;
-            case OEWSButtonA:
+            case PVWSButtonA:
                 return [[pad buttonA] isPressed];
                 break;
-            case OEWSButtonB:
+            case PVWSButtonB:
                 return [[pad buttonX] isPressed];
                 break;
             default:
@@ -2063,7 +2308,7 @@ const int NeoMap[]  = { 0, 1, 2, 3, 4, 5, 6};
 
 - (void)changeDisplayMode
 {
-    if (systemType == vb)
+    if (self.systemType == MednaSystemVirtualBoy)
     {
         switch (MDFN_IEN_VB::mednafenCurrentDisplayMode)
         {
@@ -2128,32 +2373,62 @@ const int NeoMap[]  = { 0, 1, 2, 3, 4, 5, 6};
     }
 }
 
-- (void)setDisc:(NSUInteger)discNumber {
-    uint32_t index = discNumber - 1; // 0-based index
-    MDFNI_SetMedia(0, 0, 0, 0); // open drive/eject disc
-
-    // Open/eject needs a bit of delay, so wait 1 second until inserting new disc
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 1 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{
-        MDFNI_SetMedia(0, 2, index, 0); // close drive/insert disc (2 = close)
-    });
-}
-
-- (NSUInteger)discCount {
-    return maxDiscs ? maxDiscs : 1;
-}
-
-- (BOOL)supportsDiskSwapping {
-    switch (systemType) {
-        case psx:
-            return YES;
-        case neogeo:
-        case lynx:
-        case pce:
-        case pcfx:
-        case vb:
-        case wswan:
-            return NO;
-    }
-}
+//- (void)didPush:(NSInteger)button forPlayer:(NSInteger)player {
+//
+//}
+//
+//- (void)didRelease:(NSInteger)button forPlayer:(NSInteger)player {
+//
+//}
+//
+//- (void)didMoveJoystick:(NSInteger)button withValue:(CGFloat)value forPlayer:(NSInteger)player {
+//
+//}
 
 @end
+
+// -- Sanity checks
+static_assert(sizeof(uint8) == 1, "unexpected size");
+static_assert(sizeof(int8) == 1, "unexpected size");
+
+static_assert(sizeof(uint16) == 2, "unexpected size");
+static_assert(sizeof(int16) == 2, "unexpected size");
+
+static_assert(sizeof(uint32) == 4, "unexpected size");
+static_assert(sizeof(int32) == 4, "unexpected size");
+
+static_assert(sizeof(uint64) == 8, "unexpected size");
+static_assert(sizeof(int64) == 8, "unexpected size");
+
+static_assert(sizeof(char) == 1, "unexpected size");
+static_assert(sizeof(int) == 4, "unexpected size");
+
+static_assert(sizeof(short) >= 2, "unexpected size");
+static_assert(sizeof(long) >= 4, "unexpected size");
+static_assert(sizeof(long long) >= 8, "unexpected size");
+static_assert(sizeof(size_t) >= 4, "unexpected size");
+
+static_assert(sizeof(float) >= 4, "unexpected size");
+static_assert(sizeof(double) >= 8, "unexpected size");
+static_assert(sizeof(long double) >= 8, "unexpected size");
+
+static_assert(sizeof(void*) >= 4, "unexpected size");
+//static_assert(sizeof(void*) >= sizeof(void (*)(void)), "unexpected size");
+static_assert(sizeof(uintptr_t) >= sizeof(void*), "unexpected size");
+
+static_assert(sizeof(char) == SIZEOF_CHAR, "unexpected size");
+static_assert(sizeof(short) == SIZEOF_SHORT, "unexpected size");
+static_assert(sizeof(int) == SIZEOF_INT, "unexpected size");
+static_assert(sizeof(long) == SIZEOF_LONG, "unexpected size");
+static_assert(sizeof(long long) == SIZEOF_LONG_LONG, "unexpected size");
+
+static_assert(sizeof(off_t) == SIZEOF_OFF_T, "unexpected size");
+static_assert(sizeof(ptrdiff_t) == SIZEOF_PTRDIFF_T, "unexpected size");
+static_assert(sizeof(size_t) == SIZEOF_SIZE_T, "unexpected size");
+static_assert(sizeof(void*) == SIZEOF_VOID_P, "unexpected size");
+
+static_assert(sizeof(double) == SIZEOF_DOUBLE, "unexpected size");
+
+// Make sure the "char" type is signed(pass -fsigned-char to gcc).  New code in Mednafen shouldn't be written with the
+// assumption that "char" is signed, but there likely is at least some code that does.
+static_assert((char)255 == -1, "char type is not signed 8-bit");

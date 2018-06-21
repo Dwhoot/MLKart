@@ -10,14 +10,30 @@
 #import "NSObject+PVAbstractAdditions.h"
 #import "OERingBuffer.h"
 #import "RealTimeThread.h"
+#import "PVLogging.h"
+#import <AVFoundation/AVFoundation.h>
+
+/* Timing */
+#include <mach/mach_time.h>
+#import <QuartzCore/QuartzCore.h>
+
+//#define PVTimestamp(x) (((double)mach_absolute_time(x)) * 1.0e-09  * timebase_ratio)
+#define PVTimestamp() CACurrentMediaTime()
+#define GetSecondsSince(x) (PVTimestamp() - x)
 
 static Class PVEmulatorCoreClass = Nil;
 static NSTimeInterval defaultFrameInterval = 60.0;
 
-NSString *const PVEmulatorCoreErrorDomain = @"com.jamsoftonline.EmulatorCore.ErrorDomain";
+// Different machines have different mach_absolute_time to ms ratios
+// calculate this on init
+static double timebase_ratio;
+
+
+NSString *const PVEmulatorCoreErrorDomain = @"com.provenance-emu.EmulatorCore.ErrorDomain";
 
 @interface PVEmulatorCore()
 @property (nonatomic, assign) CGFloat  framerateMultiplier;
+@property (nonatomic, assign, readwrite) BOOL isRunning;
 @end
 
 @implementation PVEmulatorCore
@@ -28,6 +44,14 @@ NSString *const PVEmulatorCoreErrorDomain = @"com.jamsoftonline.EmulatorCore.Err
     {
         PVEmulatorCoreClass = [PVEmulatorCore class];
     }
+
+
+	if (timebase_ratio == 0) {
+		mach_timebase_info_data_t s_timebase_info;
+		(void) mach_timebase_info(&s_timebase_info);
+
+		timebase_ratio = (float)s_timebase_info.numer / s_timebase_info.denom;
+	}
 }
 
 - (id)init
@@ -64,13 +88,15 @@ NSString *const PVEmulatorCoreErrorDomain = @"com.jamsoftonline.EmulatorCore.Err
 {
 	if ([self class] != PVEmulatorCoreClass)
     {
-		if (!isRunning)
+		if (!_isRunning)
 		{
-			isRunning  = YES;
+#if !TARGET_OS_TV
+			[self setPreferredSampleRate:[self audioSampleRate]];
+#endif
+			self.isRunning  = YES;
 			shouldStop = NO;
             self.gameSpeed = GameSpeedNormal;
             [NSThread detachNewThreadSelector:@selector(emulationLoopThread) toTarget:self withObject:nil];
-
 		}
 	}
 }
@@ -80,30 +106,41 @@ NSString *const PVEmulatorCoreErrorDomain = @"com.jamsoftonline.EmulatorCore.Err
 	[self doesNotImplementSelector:_cmd];
 }
 
+// GameCores that render direct to OpenGL rather than a buffer should override this and return YES
+// If the GameCore subclass returns YES, the renderDelegate will set the appropriate GL Context
+// So the GameCore subclass can just draw to OpenGL
+- (BOOL)rendersToOpenGL
+{
+    return NO;
+}
+
 - (void)setPauseEmulation:(BOOL)flag
 {
     if (flag)
 	{
-		isRunning = NO;
+		self.isRunning = NO;
 	}
     else
 	{
-		isRunning = YES;
+		self.isRunning = YES;
 	}
 }
 
 - (BOOL)isEmulationPaused
 {
-    return !isRunning;
+	return !_isRunning;
 }
 
 - (void)stopEmulation
 {
 	shouldStop = YES;
-    isRunning  = NO;
+	self.isRunning  = NO;
 
-    [self.emulationLoopThreadLock lock]; // make sure emulator loop has ended
-    [self.emulationLoopThreadLock unlock];
+    [self setIsFrontBufferReady:NO];
+    [self.frontBufferCondition signal];
+    
+//    [self.emulationLoopThreadLock lock]; // make sure emulator loop has ended
+//    [self.emulationLoopThreadLock unlock];
 }
 
 - (void)updateControllers
@@ -116,11 +153,13 @@ NSString *const PVEmulatorCoreErrorDomain = @"com.jamsoftonline.EmulatorCore.Err
     // For FPS computation
     int frameCount = 0;
     int framesTorn = 0;
-    NSDate *fpsCounter = [NSDate date];
-    
+
+	NSTimeInterval fpsCounter = PVTimestamp();
+
     //Setup Initial timing
-    NSDate *origin = [NSDate date];
-    NSTimeInterval sleepTime;
+	NSTimeInterval origin = PVTimestamp();
+
+	NSTimeInterval sleepTime = 0;
     NSTimeInterval nextEmuTick = GetSecondsSince(origin);
     
     [self.emulationLoopThreadLock lock];
@@ -134,8 +173,18 @@ NSString *const PVEmulatorCoreErrorDomain = @"com.jamsoftonline.EmulatorCore.Err
         [self updateControllers];
         
         @synchronized (self) {
-            if (isRunning) {
-                [self executeFrame];
+			if (_isRunning) {
+                if (self.isSpeedModified)
+                {
+                    [self executeFrame];
+                }
+                else
+                {
+                    @synchronized(self)
+                    {
+                        [self executeFrame];
+                    }
+                }
             }
         }
         frameCount += 1;
@@ -143,23 +192,26 @@ NSString *const PVEmulatorCoreErrorDomain = @"com.jamsoftonline.EmulatorCore.Err
         nextEmuTick += gameInterval;
         sleepTime = nextEmuTick - GetSecondsSince(origin);
         
-        NSDate* bufferSwapLimit = [[NSDate date] dateByAddingTimeInterval:sleepTime];
-        if ([self.frontBufferLock tryLock] || [self.frontBufferLock lockBeforeDate:bufferSwapLimit]) {
-            [self swapBuffers];
-            [self.frontBufferLock unlock];
-            
-            [self.frontBufferCondition lock];
-            [self setIsFrontBufferReady:YES];
-            [self.frontBufferCondition signal];
-            [self.frontBufferCondition unlock];
-        } else {
-            [self swapBuffers];
-            ++framesTorn;
-            
-            [self setIsFrontBufferReady:YES];
+        if ([self isDoubleBuffered])
+        {
+            NSDate* bufferSwapLimit = [[NSDate date] dateByAddingTimeInterval:sleepTime];
+            if ([self.frontBufferLock tryLock] || [self.frontBufferLock lockBeforeDate:bufferSwapLimit]) {
+                [self swapBuffers];
+                [self.frontBufferLock unlock];
+                
+                [self.frontBufferCondition lock];
+                [self setIsFrontBufferReady:YES];
+                [self.frontBufferCondition signal];
+                [self.frontBufferCondition unlock];
+            } else {
+                [self swapBuffers];
+                ++framesTorn;
+                
+                [self setIsFrontBufferReady:YES];
+            }
+
+            sleepTime = nextEmuTick - GetSecondsSince(origin);
         }
-        
-        sleepTime = nextEmuTick - GetSecondsSince(origin);
         
         if(sleepTime >= 0) {
             [NSThread sleepForTimeInterval:sleepTime];
@@ -167,18 +219,18 @@ NSString *const PVEmulatorCoreErrorDomain = @"com.jamsoftonline.EmulatorCore.Err
         else if (sleepTime < -0.1) {
             // We're behind, we need to reset emulation time,
             // otherwise emulation will "catch up" to real time
-            origin = [NSDate date];
+            origin = PVTimestamp();
             nextEmuTick = GetSecondsSince(origin);
         }
 
         // Compute FPS
-        NSTimeInterval timeSinceLastFPS = GetSecondsSince(fpsCounter);
+		NSTimeInterval timeSinceLastFPS = GetSecondsSince(fpsCounter);
         if (timeSinceLastFPS >= 0.5) {
             self.emulationFPS = (double)frameCount / timeSinceLastFPS;
             self.renderFPS = (double)(frameCount - framesTorn) / timeSinceLastFPS;
             frameCount = 0;
             framesTorn = 0;
-            fpsCounter = [NSDate date];
+			fpsCounter = PVTimestamp();
         }
         
     }
@@ -218,6 +270,40 @@ NSString *const PVEmulatorCoreErrorDomain = @"com.jamsoftonline.EmulatorCore.Err
     gameInterval = 1.0 / ([self frameInterval] * framerateMultiplier);
 }
 
+#if !TARGET_OS_TV
+- (Float64) getSampleRate {
+	Float64 sampleRate;
+	UInt32 srSize = sizeof (sampleRate);
+	OSStatus error =
+	AudioSessionGetProperty(
+							kAudioSessionProperty_CurrentHardwareSampleRate,
+							&srSize,
+							&sampleRate);
+	if (error == noErr) {
+		NSLog (@"CurrentHardwareSampleRate = %f", sampleRate);
+		return sampleRate;
+	} else {
+		return 48.0;
+	}
+}
+
+- (BOOL) setPreferredSampleRate:(double)preferredSampleRate {
+	double preferredSampleRate2 = preferredSampleRate ?: 48000;
+
+	AVAudioSession* session = [AVAudioSession sharedInstance];
+	BOOL success;
+	NSError* error = nil;
+	success  = [session setPreferredSampleRate:preferredSampleRate2 error:&error];
+	if (success) {
+		NSLog (@"session.sampleRate = %f", session.sampleRate);
+	} else {
+		NSLog (@"error setting sample rate %@", error);
+	}
+
+	return success;
+}
+#endif
+
 - (void)executeFrame
 {
 	[self doesNotImplementOptionalSelector:_cmd];
@@ -229,19 +315,9 @@ NSString *const PVEmulatorCoreErrorDomain = @"com.jamsoftonline.EmulatorCore.Err
     return NO;
 }
 
-- (BOOL)loadFileAtPath:(NSString *)path error:(NSError **)error
+- (BOOL)loadFileAtPath:(NSString *)path error:(NSError *__autoreleasing *)error
 {
     return [self loadFileAtPath:path];
-}
-
-- (BOOL)supportsDiskSwapping
-{
-    return NO;
-}
-
-- (void)swapDisk
-{
-    [self doesNotImplementOptionalSelector:_cmd];
 }
 
 #pragma mark - Video
@@ -338,7 +414,7 @@ NSString *const PVEmulatorCoreErrorDomain = @"com.jamsoftonline.EmulatorCore.Err
 		return [self channelCount];
 	}
 	
-	DLog(@"Buffer counts greater than 1 must implement %@", NSStringFromSelector(_cmd));
+	ELOG(@"Buffer counts greater than 1 must implement %@", NSStringFromSelector(_cmd));
 	[self doesNotImplementSelector:_cmd];
 	
 	return 0;
@@ -361,7 +437,7 @@ NSString *const PVEmulatorCoreErrorDomain = @"com.jamsoftonline.EmulatorCore.Err
 		return [self audioSampleRate];
 	}
 	
-    DLog(@"Buffer count is greater than 1, must implement %@", NSStringFromSelector(_cmd));
+    ELOG(@"Buffer count is greater than 1, must implement %@", NSStringFromSelector(_cmd));
     [self doesNotImplementSelector:_cmd];
     return 0;
 }
@@ -376,34 +452,26 @@ NSString *const PVEmulatorCoreErrorDomain = @"com.jamsoftonline.EmulatorCore.Err
     return ringBuffers[index];
 }
 
+-(NSUInteger)discCount {
+    return 0;
+}
+
 #pragma mark - Save States
 
-- (BOOL)autoSaveState
-{
-    NSString *autoSavePath = [[self saveStatesPath] stringByAppendingPathComponent:@"auto.svs"];
-    return [self saveStateToFileAtPath:autoSavePath];
-}
-
-- (BOOL)saveStateToFileAtPath:(NSString *)path
+- (BOOL)saveStateToFileAtPath:(NSString *)path error:(NSError *__autoreleasing *)error
 {
 	[self doesNotImplementSelector:_cmd];
 	return NO;
 }
 
-- (BOOL)loadStateFromFileAtPath:(NSString *)path
+- (BOOL)loadStateFromFileAtPath:(NSString *)path error:(NSError**)error
 {
 	[self doesNotImplementSelector:_cmd];
 	return NO;
 }
 
-- (void)loadSaveFile:(NSString *)path forType:(int)type
-{
-	[self doesNotImplementSelector:_cmd];
-}
-
-- (void)writeSaveFile:(NSString *)path forType:(int)type
-{
-	[self doesNotImplementSelector:_cmd];
+-(BOOL)supportsSaveStates {
+	return YES;
 }
 
 @end

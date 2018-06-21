@@ -26,6 +26,7 @@
 
 #import "OESQLiteDatabase.h"
 #import <sqlite3.h>
+@import PVSupport;
 
 NSString * const OESQLiteErrorDomain = @"OESQLiteErrorDomain";
 @interface OESQLiteDatabase ()
@@ -60,11 +61,11 @@ NSString * const OESQLiteErrorDomain = @"OESQLiteErrorDomain";
     int res = sqlite3_close(connection);
     if(res != SQLITE_OK)
     {
-        DLog(@"Could not close SQL Database correctly. (Error Code %d: %s)", res, sqlite3_errmsg(connection));
+        DLOG(@"Could not close SQL Database correctly. (Error Code %d: %s)", res, sqlite3_errmsg(connection));
     }
 }
 
-- (id)executeQuery:(NSString*)sql error:(NSError *__autoreleasing *)error
+- (NSArray<NSDictionary<NSString*, NSObject*>*> *_Nullable)executeQuery:(NSString* _Nonnull)sql error:(NSError *__autoreleasing *)error
 {
     NSMutableArray *result = nil;
     @synchronized(self)
@@ -134,12 +135,12 @@ NSString * const OESQLiteErrorDomain = @"OESQLiteErrorDomain";
         }
         case SQLITE_BLOB:
         {
-            DLog(@"SQLITE Type Blob not supported right now");
+            DLOG(@"SQLITE Type Blob not supported right now");
             value = nil;
             break;
         }
         default:
-            DLog(@"Unknown data type: %d", type);
+            DLOG(@"Unknown data type: %d", type);
             value = nil;
             break;
     }

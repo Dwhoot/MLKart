@@ -28,6 +28,7 @@
 #import <PVSupport/OERingBuffer.h>
 #import <OpenGLES/ES3/gl.h>
 #import <OpenGLES/ES3/glext.h>
+#import <PVGB/PVGB-Swift.h>
 
 #include "gambatte.h"
 #include "gbcpalettes.h"
@@ -44,7 +45,7 @@ uint32_t gb_pad[PVGBButtonCount];
     uint32_t *inSoundBuffer;
     int16_t *outSoundBuffer;
     double sampleRate;
-    int displayMode;
+    GBPalette displayMode;
 }
 - (void)outputAudio:(unsigned)frames;
 - (void)applyCheat:(NSString *)code;
@@ -77,7 +78,7 @@ public:
         videoBuffer = (uint32_t *)malloc(160 * 144 * 4);
         inSoundBuffer = (uint32_t *)malloc(2064 * 2 * 4);
         outSoundBuffer = (int16_t *)malloc(2064 * 2 * 2);
-        displayMode = 0;
+        displayMode = GBPalettePeaSoupGreen;
     }
 
 	_current = self;
@@ -94,7 +95,7 @@ public:
 
 # pragma mark - Execution
 
-- (BOOL)loadFileAtPath:(NSString *)path
+- (BOOL)loadFileAtPath:(NSString *)path error:(NSError**)error
 {
     memset(gb_pad, 0, sizeof(uint32_t) * PVGBButtonCount);
 
@@ -119,14 +120,33 @@ public:
     double outSampleRate = inSampleRate * mul / div;
     sampleRate = outSampleRate; // 47994.326636
 
-    if (gb.load([path UTF8String]) != 0)
+    if (gb.load([path UTF8String]) != 0) {
+        NSDictionary *userInfo = @{
+                                   NSLocalizedDescriptionKey: @"Failed to load game.",
+                                   NSLocalizedFailureReasonErrorKey: @"Gambatte failed to load ROM.",
+                                   NSLocalizedRecoverySuggestionErrorKey: @"Check that file isn't corrupt and in format Gambatte supports."
+                                   };
+        
+        NSError *newError = [NSError errorWithDomain:PVEmulatorCoreErrorDomain
+                                                code:PVEmulatorCoreErrorCodeCouldNotLoadRom
+                                            userInfo:userInfo];
+        
+        *error = newError;
+        
         return NO;
+    }
 
     // Load built-in GBC palette for monochrome games if supported
-    if (!gb.isCgb())
-        [self loadPalette];
-
+	if (gb.isCgb()) {
+		[self setPalette];
+	} else {
+		[self loadPalette];
+	}
     return YES;
+}
+
+-(BOOL)isGameboyColor {
+	return gb.isCgb();
 }
 
 - (void)executeFrame
@@ -153,7 +173,7 @@ public:
 
 - (void)stopEmulation
 {
-    if (isRunning)
+    if (self.isRunning)
     {
         gb.saveSavedata();
 
@@ -220,29 +240,57 @@ public:
 
 # pragma mark - Save States
 
-- (BOOL)saveStateToFileAtPath:(NSString *)fileName
+- (BOOL)saveStateToFileAtPath:(NSString *)fileName error:(NSError**)error  
 {
     @synchronized(self) {
-        return gb.saveState(0, 0, [fileName UTF8String]);
+        BOOL success = gb.saveState(0, 0, [fileName UTF8String]);
+		if (!success) {
+			NSDictionary *userInfo = @{
+									   NSLocalizedDescriptionKey: @"Failed to save state.",
+									   NSLocalizedFailureReasonErrorKey: @"Core failed to create save state.",
+									   NSLocalizedRecoverySuggestionErrorKey: @""
+									   };
+
+			NSError *newError = [NSError errorWithDomain:PVEmulatorCoreErrorDomain
+													code:PVEmulatorCoreErrorCodeCouldNotSaveState
+												userInfo:userInfo];
+
+			*error = newError;
+		}
+		return success;
     }
 }
 
-- (BOOL)loadStateFromFileAtPath:(NSString *)fileName
+- (BOOL)loadStateFromFileAtPath:(NSString *)fileName error:(NSError**)error
 {
     @synchronized(self) {
-        return gb.loadState([fileName UTF8String]);
+        BOOL success = gb.loadState([fileName UTF8String]);
+		if (!success) {
+			NSDictionary *userInfo = @{
+									   NSLocalizedDescriptionKey: @"Failed to save state.",
+									   NSLocalizedFailureReasonErrorKey: @"Core failed to load save state.",
+									   NSLocalizedRecoverySuggestionErrorKey: @""
+									   };
+
+			NSError *newError = [NSError errorWithDomain:PVEmulatorCoreErrorDomain
+													code:PVEmulatorCoreErrorCodeCouldNotLoadState
+												userInfo:userInfo];
+
+			*error = newError;
+		}
+		return success;
     }
 }
 
 # pragma mark - Input
 
 const int GBMap[] = {gambatte::InputGetter::UP, gambatte::InputGetter::DOWN, gambatte::InputGetter::LEFT, gambatte::InputGetter::RIGHT, gambatte::InputGetter::A, gambatte::InputGetter::B, gambatte::InputGetter::START, gambatte::InputGetter::SELECT};
-- (oneway void)pushGBButton:(PVGBButton)button
+- (void)didPushGBButton:(PVGBButton)button forPlayer:(NSInteger)player
 {
     gb_pad[0] |= GBMap[button];
 }
 
-- (oneway void)releaseGBButton:(PVGBButton)button
+- (void)didReleaseGBButton:(PVGBButton)button forPlayer:(NSInteger)player
 {
     gb_pad[0] &= ~GBMap[button];
 }
@@ -259,11 +307,11 @@ const int GBMap[] = {gambatte::InputGetter::UP, gambatte::InputGetter::DOWN, gam
         (dpad.left.isPressed || pad.leftThumbstick.left.isPressed) ? gb_pad[0] |= GBMap[PVGBButtonLeft] : gb_pad[0] &= ~GBMap[PVGBButtonLeft];
         (dpad.right.isPressed || pad.leftThumbstick.right.isPressed) ? gb_pad[0] |= GBMap[PVGBButtonRight] : gb_pad[0] &= ~GBMap[PVGBButtonRight];
 
-        pad.buttonA.isPressed ? gb_pad[0] |= GBMap[PVGBButtonB] : gb_pad[0] &= ~GBMap[PVGBButtonB];
-        pad.buttonB.isPressed ? gb_pad[0] |= GBMap[PVGBButtonA] : gb_pad[0] &= ~GBMap[PVGBButtonA];
+        (pad.buttonA.isPressed || pad.buttonY.isPressed) ? gb_pad[0] |= GBMap[PVGBButtonB] : gb_pad[0] &= ~GBMap[PVGBButtonB];
+        (pad.buttonB.isPressed || pad.buttonX.isPressed) ? gb_pad[0] |= GBMap[PVGBButtonA] : gb_pad[0] &= ~GBMap[PVGBButtonA];
 
-        (pad.buttonX.isPressed || pad.leftShoulder.isPressed || pad.leftTrigger.isPressed) ? gb_pad[0] |= GBMap[PVGBButtonStart] : gb_pad[0] &= ~GBMap[PVGBButtonStart];
-        (pad.buttonY.isPressed || pad.rightShoulder.isPressed || pad.rightTrigger.isPressed) ? gb_pad[0] |= GBMap[PVGBButtonSelect] : gb_pad[0] &= ~GBMap[PVGBButtonSelect];
+        (pad.leftShoulder.isPressed || pad.leftTrigger.isPressed) ? gb_pad[0] |= GBMap[PVGBButtonSelect] : gb_pad[0] &= ~GBMap[PVGBButtonSelect];
+        (pad.rightShoulder.isPressed || pad.rightTrigger.isPressed) ? gb_pad[0] |= GBMap[PVGBButtonStart] : gb_pad[0] &= ~GBMap[PVGBButtonStart];
     }
     else if ([self.controller1 gamepad])
     {
@@ -275,11 +323,11 @@ const int GBMap[] = {gambatte::InputGetter::UP, gambatte::InputGetter::DOWN, gam
         dpad.left.isPressed ? gb_pad[0] |= GBMap[PVGBButtonLeft] : gb_pad[0] &= ~GBMap[PVGBButtonLeft];
         dpad.right.isPressed ? gb_pad[0] |= GBMap[PVGBButtonRight] : gb_pad[0] &= ~GBMap[PVGBButtonRight];
 
-        pad.buttonA.isPressed ? gb_pad[0] |= GBMap[PVGBButtonB] : gb_pad[0] &= ~GBMap[PVGBButtonB];
-        pad.buttonB.isPressed ? gb_pad[0] |= GBMap[PVGBButtonA] : gb_pad[0] &= ~GBMap[PVGBButtonA];
+        (pad.buttonA.isPressed || pad.buttonY.isPressed) ? gb_pad[0] |= GBMap[PVGBButtonB] : gb_pad[0] &= ~GBMap[PVGBButtonB];
+        (pad.buttonB.isPressed || pad.buttonX.isPressed) ? gb_pad[0] |= GBMap[PVGBButtonA] : gb_pad[0] &= ~GBMap[PVGBButtonA];
 
-        (pad.buttonX.isPressed || pad.leftShoulder.isPressed) ? gb_pad[0] |= GBMap[PVGBButtonStart] : gb_pad[0] &= ~GBMap[PVGBButtonStart];
-        (pad.buttonY.isPressed || pad.rightShoulder.isPressed) ? gb_pad[0] |= GBMap[PVGBButtonSelect] : gb_pad[0] &= ~GBMap[PVGBButtonSelect];
+        pad.leftShoulder.isPressed ? gb_pad[0] |= GBMap[PVGBButtonSelect] : gb_pad[0] &= ~GBMap[PVGBButtonSelect];
+        pad.rightShoulder.isPressed ? gb_pad[0] |= GBMap[PVGBButtonStart] : gb_pad[0] &= ~GBMap[PVGBButtonStart];
     }
 #if TARGET_OS_TV
     else if ([self.controller1 microGamepad])
@@ -342,17 +390,20 @@ NSMutableDictionary *gb_cheatlist = [[NSMutableDictionary alloc] init];
 }
 
 # pragma mark - Display Mode
+- (GBPalette)currentDisplayMode {
+	return displayMode;
+}
 
-- (void)changeDisplayMode
+- (void)changeDisplayMode:(GBPalette)displayMode
 {
     if (gb.isCgb())
         return;
 
     unsigned short *gbc_bios_palette = NULL;
-
+	self->displayMode = displayMode;
     switch (displayMode)
     {
-        case 0:
+        case GBPalettePeaSoupGreen:
         {
             // GB Pea Soup Green
             gb.setDmgPaletteColor(0, 0, 8369468);
@@ -367,12 +418,9 @@ NSMutableDictionary *gb_cheatlist = [[NSMutableDictionary alloc] init];
             gb.setDmgPaletteColor(2, 1, 6728764);
             gb.setDmgPaletteColor(2, 2, 3629872);
             gb.setDmgPaletteColor(2, 3, 3223857);
-
-            displayMode++;
             return;
         }
-
-        case 1:
+        case GBPalettePocket:
         {
             // GB Pocket
             gb.setDmgPaletteColor(0, 0, 13487791);
@@ -388,66 +436,42 @@ NSMutableDictionary *gb_cheatlist = [[NSMutableDictionary alloc] init];
             gb.setDmgPaletteColor(2, 2, 6974033);
             gb.setDmgPaletteColor(2, 3, 2828823);
 
-            displayMode++;
             return;
         }
-
-        case 2:
+        case GBPaletteBlue:
             gbc_bios_palette = const_cast<unsigned short *>(findGbcDirPal("GBC - Blue"));
-            displayMode++;
             break;
-
-        case 3:
+        case GBPaletteDarkBlue:
             gbc_bios_palette = const_cast<unsigned short *>(findGbcDirPal("GBC - Dark Blue"));
-            displayMode++;
             break;
-
-        case 4:
+        case GBPaletteGreen:
             gbc_bios_palette = const_cast<unsigned short *>(findGbcDirPal("GBC - Green"));
-            displayMode++;
             break;
-
-        case 5:
+        case GBPaletteDarkGreen:
             gbc_bios_palette = const_cast<unsigned short *>(findGbcDirPal("GBC - Dark Green"));
-            displayMode++;
             break;
-
-        case 6:
+        case GBPaletteBrown:
             gbc_bios_palette = const_cast<unsigned short *>(findGbcDirPal("GBC - Brown"));
-            displayMode++;
             break;
-
-        case 7:
+        case GBPaletteDarkBrown:
             gbc_bios_palette = const_cast<unsigned short *>(findGbcDirPal("GBC - Dark Brown"));
-            displayMode++;
             break;
-
-        case 8:
+        case GBPaletteRed:
             gbc_bios_palette = const_cast<unsigned short *>(findGbcDirPal("GBC - Red"));
-            displayMode++;
             break;
-
-        case 9:
+        case GBPaletteYellow:
             gbc_bios_palette = const_cast<unsigned short *>(findGbcDirPal("GBC - Yellow"));
-            displayMode++;
             break;
-
-        case 10:
+        case GBPaletteOrange:
             gbc_bios_palette = const_cast<unsigned short *>(findGbcDirPal("GBC - Orange"));
-            displayMode++;
             break;
-
-        case 11:
+        case GBPalettePastelMix:
             gbc_bios_palette = const_cast<unsigned short *>(findGbcDirPal("GBC - Pastel Mix"));
-            displayMode++;
             break;
-
-        case 12:
+        case GBPaletteInverted:
             gbc_bios_palette = const_cast<unsigned short *>(findGbcDirPal("GBC - Inverted"));
-            displayMode++;
             break;
-
-        case 13:
+		case GBPaletteRomTitle:
         {
             std::string str = gb.romTitle(); // read ROM internal title
             const char *internal_game_name = str.c_str();
@@ -456,23 +480,18 @@ NSMutableDictionary *gb_cheatlist = [[NSMutableDictionary alloc] init];
             if (gbc_bios_palette == 0)
             {
                 gbc_bios_palette = const_cast<unsigned short *>(findGbcDirPal("GBC - Grayscale"));
-                displayMode = 0;
+                displayMode = GBPalettePeaSoupGreen;
             }
-            else
-                displayMode++;
-
-            break;
-        }
-
-        case 14:
+			break;
+		}
+        case GBPaletteGrayscale:
             gbc_bios_palette = const_cast<unsigned short *>(findGbcDirPal("GBC - Grayscale"));
-            displayMode = 0;
-            break;
-
+            displayMode = GBPalettePeaSoupGreen;
+			break;
         default:
             return;
-            break;
-    }
+			break;
+	}
 
     unsigned rgb32 = 0;
     for (unsigned palnum = 0; palnum < 3; ++palnum)

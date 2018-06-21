@@ -26,23 +26,18 @@
 
 #import <Foundation/Foundation.h>
 #import <PVSupport/PVEmulatorCore.h>
+#import <PVSupport/PVSupport-Swift.h>
 
-typedef NS_ENUM(NSInteger, PVGBButton)
-{
-    PVGBButtonUp,
-    PVGBButtonDown,
-    PVGBButtonLeft,
-    PVGBButtonRight,
-    PVGBButtonA,
-    PVGBButtonB,
-    PVGBButtonStart,
-    PVGBButtonSelect,
-    PVGBButtonCount,
-};
+@interface PVGBEmulatorCore : PVEmulatorCore <PVGBSystemResponderClient>
 
-@interface PVGBEmulatorCore : PVEmulatorCore
+- (void)didPushGBButton:(PVGBButton)button forPlayer:(NSInteger)player;
+- (void)didReleaseGBButton:(PVGBButton)button forPlayer:(NSInteger)player;
 
-- (oneway void)pushGBButton:(PVGBButton)button;
-- (oneway void)releaseGBButton:(PVGBButton)button;
+@end
 
+// for Swiwt extensions
+@interface PVGBEmulatorCore()
+-(NSInteger)currentDisplayMode;
+-(void)changeDisplayMode:(NSInteger)displayMode;
+@property (nonatomic, readonly) BOOL isGameboyColor;
 @end

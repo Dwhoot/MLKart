@@ -8,7 +8,6 @@
 
 #import <UIKit/UIKit.h>
 #import <GameController/GameController.h>
-#import <PVSupport/OERingBuffer.h>
 
 #pragma mark -
 
@@ -28,9 +27,20 @@ typedef NS_ENUM(NSInteger, PVEmulatorCoreErrorCode) {
     PVEmulatorCoreErrorCodeStateHasWrongSize        = -4,
     PVEmulatorCoreErrorCodeCouldNotSaveState        = -5,
     PVEmulatorCoreErrorCodeDoesNotSupportSaveStates = -6,
+    PVEmulatorCoreErrorCodeMissingM3U               = -7,
 };
 
-#define GetSecondsSince(x) (-[x timeIntervalSinceNow])
+@protocol PVAudioDelegate
+@required
+- (void)audioSampleRateDidChange;
+@end
+
+@protocol PVRenderDelegate
+
+@required
+- (void)startRenderingOnAlternateThread;
+- (void)didRenderFrameOnAlternateThread;
+@end
 
 @interface PVEmulatorCore : NSObject {
 	
@@ -40,20 +50,25 @@ typedef NS_ENUM(NSInteger, PVEmulatorCoreErrorCode) {
 	
 	NSTimeInterval gameInterval;
 	NSTimeInterval _frameInterval;
-
-    BOOL isRunning;
     BOOL shouldStop;
 }
 
 @property (nonatomic, assign) double emulationFPS;
 @property (nonatomic, assign) double renderFPS;
 
+@property(weak)     id<PVAudioDelegate>    audioDelegate;
+@property(weak)     id<PVRenderDelegate>   renderDelegate;
+
+@property (nonatomic, assign, readonly) BOOL isRunning;
 @property (nonatomic, copy) NSString *romName;
 @property (nonatomic, copy) NSString *saveStatesPath;
 @property (nonatomic, copy) NSString *batterySavesPath;
 @property (nonatomic, copy) NSString *BIOSPath;
 @property (nonatomic, copy) NSString *systemIdentifier;
+@property (nonatomic, copy) NSString *coreIdentifier;
 @property (nonatomic, strong) NSString* romMD5;
+@property (nonatomic, strong) NSString* romSerial;
+@property (nonatomic, assign) BOOL supportsSaveStates;
 
 @property (atomic, assign) BOOL shouldResyncTime;
 
@@ -62,17 +77,28 @@ typedef NS_ENUM(NSInteger, GameSpeed) {
 	GameSpeedNormal,
 	GameSpeedFast
 };
+
+typedef NS_ENUM(NSInteger, GLESVersion) {
+	GLESVersion1,
+	GLESVersion2,
+	GLESVersion3
+};
+
 @property (nonatomic, assign) GameSpeed gameSpeed;
 @property (nonatomic, readonly, getter=isSpeedModified) BOOL speedModified;
 
 @property (nonatomic, strong) GCController *controller1;
 @property (nonatomic, strong) GCController *controller2;
+@property (nonatomic, strong) GCController *controller3;
+@property (nonatomic, strong) GCController *controller4;
 
 @property (nonatomic, strong) NSLock  *emulationLoopThreadLock;
 @property (nonatomic, strong) NSCondition  *frontBufferCondition;
 @property (nonatomic, strong) NSLock  *frontBufferLock;
 @property (nonatomic, assign) BOOL isFrontBufferReady;
+@property (nonatomic, assign) GLESVersion glesVersion;
 
+- (BOOL)rendersToOpenGL;
 - (void)startEmulation;
 - (void)resetEmulation;
 - (void)setPauseEmulation:(BOOL)flag;
@@ -80,11 +106,8 @@ typedef NS_ENUM(NSInteger, GameSpeed) {
 - (void)stopEmulation;
 - (void)frameRefreshThread:(id)anArgument;
 - (void)executeFrame;
-- (BOOL)loadFileAtPath:(NSString *)path error:(NSError **)error;
+- (BOOL)loadFileAtPath:(NSString *)path error:(NSError *__autoreleasing *)error;
 - (void)updateControllers;
-
-- (BOOL)supportsDiskSwapping;
-- (void)swapDisk;
 
 - (const void *)videoBuffer;
 - (CGRect)screenRect;
@@ -107,11 +130,7 @@ typedef NS_ENUM(NSInteger, GameSpeed) {
 - (double)audioSampleRateForBuffer:(NSUInteger)buffer;
 - (OERingBuffer *)ringBufferAtIndex:(NSUInteger)index;
 
-- (void)loadSaveFile:(NSString *)path forType:(int)type;
-- (void)writeSaveFile:(NSString *)path forType:(int)type;
-
-- (BOOL)autoSaveState;
-- (BOOL)saveStateToFileAtPath:(NSString *)path;
-- (BOOL)loadStateFromFileAtPath:(NSString *)path;
+- (BOOL)saveStateToFileAtPath:(NSString *)path error:(NSError *__autoreleasing *)error;
+- (BOOL)loadStateFromFileAtPath:(NSString *)path error:(NSError *__autoreleasing *)error;
 
 @end

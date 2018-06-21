@@ -9,44 +9,57 @@
 #include "kICadeControllerSetting.h"
 #import "PViCade8BitdoController.h"
 #import "PViCadeSteelSeriesController.h"
+#import "PViCadeMocuteController.h"
 
-
-NSString* kIcadeControllerSettingToString(kICadeControllerSetting value) {
+NSString* iCadeControllerSettingToString(iCadeControllerSetting value) {
     NSString* stringRepresentation = nil;
     switch (value) {
-        case kICadeControllerSettingDisabled:
+        case iCadeControllerSettingDisabled:
             stringRepresentation = @"Disabled";
             break;
-        case kICadeControllerSettingStandard:
+        case iCadeControllerSettingStandard:
             stringRepresentation = @"Standard Controller";
             break;
-        case kICadeControllerSetting8Bitdo:
+        case iCadeControllerSetting8Bitdo:
             stringRepresentation = @"8Bitdo Controller";
             break;
-        case kICadeControllerSettingSteelSeries:
-            stringRepresentation = @"SteelSeries Free Controller";
-        default:
+        case iCadeControllerSetting8BitdoZero:
+            stringRepresentation =  @"8Bitdo Zero Controller";
+            break;
+		case iCadeControllerSettingSteelSeries:
+			stringRepresentation = @"SteelSeries Free Controller";
+			break;
+		case iCadeControllerSettingMocute:
+			stringRepresentation = @"Mocute Controller";
+			break;
+		default:
             break;
     }
     
     return stringRepresentation;
 }
 
-PViCadeController* kIcadeControllerSettingToPViCadeController(kICadeControllerSetting value) {
+PViCadeController* iCadeControllerSettingToPViCadeController(iCadeControllerSetting value) {
     PViCadeController* controller = nil;
     switch (value) {
-        case kICadeControllerSettingDisabled:
+        case iCadeControllerSettingDisabled:
             controller = nil;
             break;
-        case kICadeControllerSettingStandard:
+        case iCadeControllerSettingStandard:
             controller = [[PViCadeController alloc] init];
             break;
-        case kICadeControllerSetting8Bitdo:
+        case iCadeControllerSetting8Bitdo:
             controller = [[PViCade8BitdoController alloc] init];
             break;
-        case kICadeControllerSettingSteelSeries:
+		case iCadeControllerSetting8BitdoZero:
+			controller = [[PViCade8BitdoZeroController alloc] init];
+			break;
+        case iCadeControllerSettingSteelSeries:
             controller = [[PViCadeSteelSeriesController alloc] init];
             break;
+		case iCadeControllerSettingMocute:
+			controller = [[PViCadeMocuteController alloc] init];
+			break;
         default:
             break;
     }

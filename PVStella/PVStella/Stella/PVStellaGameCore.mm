@@ -32,7 +32,6 @@
 #import <OpenGLES/ES3/gl.h>
 #import <OpenGLES/ES3/glext.h>
 
-#import "OE2600SystemResponderClient.h"
 #include "libretro.h"
 
 // Size and screen buffer consants
@@ -113,7 +112,7 @@ static void video_callback(const void *data, unsigned width, unsigned height, si
 }
 
 static void input_poll_callback(void) {
-	//DLog(@"poll callback");
+	//DLOG(@"poll callback");
 }
 
 static int16_t input_state_callback(unsigned port, unsigned device, unsigned index, unsigned _id)
@@ -148,7 +147,7 @@ static bool environment_callback(unsigned cmd, void *data) {
             NSString *appSupportPath = [strongCurrent BIOSPath];
             
             *(const char **)data = [appSupportPath UTF8String];
-            DLog(@"Environ SYSTEM_DIRECTORY: \"%@\".\n", appSupportPath);
+            DLOG(@"Environ SYSTEM_DIRECTORY: \"%@\".\n", appSupportPath);
             break;
         }
         case RETRO_ENVIRONMENT_SET_PIXEL_FORMAT: {
@@ -156,7 +155,7 @@ static bool environment_callback(unsigned cmd, void *data) {
             break;
         }
         default : {
-            DLog(@"Environ UNSUPPORTED (#%u).\n", cmd);
+            DLOG(@"Environ UNSUPPORTED (#%u).\n", cmd);
             return false;
         }
     }
@@ -185,10 +184,10 @@ static void loadSaveFile(const char* path, int type) {
     
     int rc = fread(data, sizeof(uint8_t), size, file);
     if ( rc != size ) {
-        DLog(@"Couldn't load save file.");
+        DLOG(@"Couldn't load save file.");
     }
     
-    DLog(@"Loaded save file: %s", path);
+    DLOG(@"Loaded save file: %s", path);
     fclose(file);
 }
 
@@ -202,10 +201,10 @@ static void writeSaveFile(const char* path, int type)
         FILE *file = fopen(path, "wb");
         if ( file != NULL )
         {
-            DLog(@"Saving state %s. Size: %d bytes.", path, (int)size);
+            DLOG(@"Saving state %s. Size: %d bytes.", path, (int)size);
             stella_retro_serialize(data, size);
             if ( fwrite(data, sizeof(uint8_t), size, file) != size )
-                DLog(@"Did not save state properly.");
+                DLOG(@"Did not save state properly.");
             fclose(file);
         }
     }
@@ -300,41 +299,78 @@ static void writeSaveFile(const char* path, int type)
     return NO;
 }
 
-- (void)loadSaveFile:(NSString *)path forType:(int)type
+- (BOOL)loadSaveFile:(NSString *)path forType:(int)type
 {
     size_t size = stella_retro_get_memory_size(type);
     void *ramData = stella_retro_get_memory_data(type);
     
     if (size == 0 || !ramData)
     {
-        return;
+        return NO;
     }
     
     NSData *data = [NSData dataWithContentsOfFile:path];
     if (!data || ![data length])
     {
-        DLog(@"Couldn't load save file.");
+        DLOG(@"Couldn't load save file.");
+		return NO;
     }
     
     [data getBytes:ramData length:size];
+	return YES;
 }
 
-- (void)writeSaveFile:(NSString *)path forType:(int)type
-{
+- (BOOL)writeSaveFile:(NSString *)path forType:(int)type {
     size_t size = stella_retro_get_memory_size(type);
     void *ramData = stella_retro_get_memory_data(type);
-    
-    if (ramData && (size > 0))
-    {
+
+    if (ramData && (size > 0)) {
         stella_retro_serialize(ramData, size);
         NSData *data = [NSData dataWithBytes:ramData length:size];
         BOOL success = [data writeToFile:path atomically:YES];
         if (!success)
         {
-            DLog(@"Error writing save file");
+            DLOG(@"Error writing save file");
         }
-    }
+		return success;
+	} else {
+		ELOG(@"Stella ramdata is invalid");
+		return NO;
+	}
 }
+
+- (BOOL)saveStateToFileAtPath:(NSString *)fileName error:(NSError**)error   {
+	NSDictionary *userInfo = @{
+							   NSLocalizedDescriptionKey: @"Failed to save state.",
+							   NSLocalizedFailureReasonErrorKey: @"Stella does not support save states.",
+							   NSLocalizedRecoverySuggestionErrorKey: @"Check for future updates on ticket #753."
+							   };
+
+	NSError *newError = [NSError errorWithDomain:PVEmulatorCoreErrorDomain
+											code:PVEmulatorCoreErrorCodeCouldNotSaveState
+										userInfo:userInfo];
+
+	*error = newError;
+	return NO;
+//	return [self writeSaveFile:fileName forType:RETRO_MEMORY_SAVE_RAM];
+}
+
+- (BOOL)loadStateFromFileAtPath:(NSString *)fileName error:(NSError**)error   {
+	NSDictionary *userInfo = @{
+							   NSLocalizedDescriptionKey: @"Failed to load state.",
+							   NSLocalizedFailureReasonErrorKey: @"Stella does not support save states.",
+							   NSLocalizedRecoverySuggestionErrorKey: @"Check for future updates on ticket #753."
+							   };
+
+	NSError *newError = [NSError errorWithDomain:PVEmulatorCoreErrorDomain
+											code:PVEmulatorCoreErrorCodeCouldNotLoadState
+										userInfo:userInfo];
+
+	*error = newError;
+	return NO;
+//	return [self loadSaveFile:fileName forType:RETRO_MEMORY_SAVE_RAM];
+}
+
 
 #pragma mark Input
 - (void)pollControllers {
@@ -353,36 +389,36 @@ static void writeSaveFile(const char* path, int type)
             GCExtendedGamepad *gamepad     = [controller extendedGamepad];
             GCControllerDirectionPad *dpad = [gamepad dpad];
             
-            /* TODO: To support paddles we would need to circumvent libRatre's emulation of analog controls or drop libRetro and talk to stella directly like OpenEMU did */
+            /* TODO: To support paddles we would need to circumvent libRetro's emulation of analog controls or drop libRetro and talk to stella directly like OpenEMU did */
             
-            // DPAD
+            // D-Pad
             _pad[playerIndex][RETRO_DEVICE_ID_JOYPAD_UP]    = (dpad.up.isPressed    || gamepad.leftThumbstick.up.isPressed);
             _pad[playerIndex][RETRO_DEVICE_ID_JOYPAD_DOWN]  = (dpad.down.isPressed  || gamepad.leftThumbstick.down.isPressed);
             _pad[playerIndex][RETRO_DEVICE_ID_JOYPAD_LEFT]  = (dpad.left.isPressed  || gamepad.leftThumbstick.left.isPressed);
             _pad[playerIndex][RETRO_DEVICE_ID_JOYPAD_RIGHT] = (dpad.right.isPressed || gamepad.leftThumbstick.right.isPressed);
-            
-                // Buttons
-            
-                // Fire 1
+
+			// #688, use second thumb to control second player input if no controller active
+			// some games used both joysticks for 1 player optionally
+			if(playerIndex == 0 && self.controller2 == nil) {
+				_pad[1][RETRO_DEVICE_ID_JOYPAD_UP]    = gamepad.rightThumbstick.up.isPressed;
+				_pad[1][RETRO_DEVICE_ID_JOYPAD_DOWN]  = gamepad.rightThumbstick.down.isPressed;
+				_pad[1][RETRO_DEVICE_ID_JOYPAD_LEFT]  = gamepad.rightThumbstick.left.isPressed;
+				_pad[1][RETRO_DEVICE_ID_JOYPAD_RIGHT] = gamepad.rightThumbstick.right.isPressed;
+			}
+
+            // Fire
             _pad[playerIndex][RETRO_DEVICE_ID_JOYPAD_B] = gamepad.buttonA.isPressed;
-                // Fire 2
-            _pad[playerIndex][RETRO_DEVICE_ID_JOYPAD_A] = gamepad.buttonX.isPressed;
-                // Fire 3
-            _pad[playerIndex][RETRO_DEVICE_ID_JOYPAD_X] = gamepad.buttonB.isPressed;
+            // Trigger
+            _pad[playerIndex][RETRO_DEVICE_ID_JOYPAD_A] =  gamepad.buttonB.isPressed || gamepad.rightTrigger.isPressed;
+            // Booster
+            _pad[playerIndex][RETRO_DEVICE_ID_JOYPAD_X] = gamepad.buttonX.isPressed || gamepad.buttonY.isPressed || gamepad.leftTrigger.isPressed;
             
-            // Triggers
+            // Reset
+            _pad[playerIndex][RETRO_DEVICE_ID_JOYPAD_START]  = gamepad.rightShoulder.isPressed;
             
-                // Reset
-            _pad[playerIndex][RETRO_DEVICE_ID_JOYPAD_START]  = gamepad.leftTrigger.isPressed;
-            
-                // Select
-            _pad[playerIndex][RETRO_DEVICE_ID_JOYPAD_SELECT] = gamepad.rightTrigger.isPressed;
+            // Select
+            _pad[playerIndex][RETRO_DEVICE_ID_JOYPAD_SELECT] = gamepad.leftShoulder.isPressed;
    
-                // Color
-            _pad[playerIndex][RETRO_DEVICE_ID_JOYPAD_L3] = gamepad.rightShoulder.isPressed;
-            
-                // Black and White
-            _pad[playerIndex][RETRO_DEVICE_ID_JOYPAD_R3] = gamepad.leftShoulder.isPressed;
             /*
              #define RETRO_DEVICE_ID_JOYPAD_B        0 == JoystickZeroFire1
              #define RETRO_DEVICE_ID_JOYPAD_Y        1 == Unmapped
@@ -405,26 +441,25 @@ static void writeSaveFile(const char* path, int type)
             GCGamepad *gamepad = [controller gamepad];
             GCControllerDirectionPad *dpad = [gamepad dpad];
             
-                // DPAD
+            // D-Pad
             _pad[playerIndex][RETRO_DEVICE_ID_JOYPAD_UP]    = dpad.up.isPressed;
             _pad[playerIndex][RETRO_DEVICE_ID_JOYPAD_DOWN]  = dpad.down.isPressed;
             _pad[playerIndex][RETRO_DEVICE_ID_JOYPAD_LEFT]  = dpad.left.isPressed;
             _pad[playerIndex][RETRO_DEVICE_ID_JOYPAD_RIGHT] = dpad.right.isPressed;
-
-                // Buttons
             
-                // Fire 1
+            // Fire
             _pad[playerIndex][RETRO_DEVICE_ID_JOYPAD_B] = gamepad.buttonA.isPressed;
-                // Fire 2
-            _pad[playerIndex][RETRO_DEVICE_ID_JOYPAD_A] = gamepad.buttonX.isPressed;
-                // Fire 3
-            _pad[playerIndex][RETRO_DEVICE_ID_JOYPAD_X] = gamepad.buttonB.isPressed;
+            // Trigger
+            _pad[playerIndex][RETRO_DEVICE_ID_JOYPAD_A] =  gamepad.buttonB.isPressed;
+            // Booster
+            _pad[playerIndex][RETRO_DEVICE_ID_JOYPAD_X] = gamepad.buttonX.isPressed || gamepad.buttonY.isPressed;
             
-                // Reset
-            _pad[playerIndex][RETRO_DEVICE_ID_JOYPAD_START]  = gamepad.leftShoulder.isPressed;
+            // Reset
+            _pad[playerIndex][RETRO_DEVICE_ID_JOYPAD_START]  = gamepad.rightShoulder.isPressed;
             
-                // Select
-            _pad[playerIndex][RETRO_DEVICE_ID_JOYPAD_SELECT] = gamepad.rightShoulder.isPressed;
+            // Select
+            _pad[playerIndex][RETRO_DEVICE_ID_JOYPAD_SELECT] = gamepad.leftShoulder.isPressed;
+            
         }
 #if TARGET_OS_TV
         else if ([controller microGamepad]) {
@@ -436,18 +471,20 @@ static void writeSaveFile(const char* path, int type)
             _pad[playerIndex][RETRO_DEVICE_ID_JOYPAD_LEFT]  = dpad.left.value > 0.5;
             _pad[playerIndex][RETRO_DEVICE_ID_JOYPAD_RIGHT] = dpad.right.value > 0.5;
 
+            // Fire
             _pad[playerIndex][RETRO_DEVICE_ID_JOYPAD_B] = gamepad.buttonX.isPressed;
+            // Trigger
             _pad[playerIndex][RETRO_DEVICE_ID_JOYPAD_A] = gamepad.buttonA.isPressed;
         }
 #endif
     }
 }
 
-- (oneway void)didPush2600Button:(OE2600Button)button forPlayer:(NSUInteger)player {
+- (void)didPushPV2600Button:(PV2600Button)button forPlayer:(NSUInteger)player {
     _pad[player][A2600EmulatorValues[button]] = 1;
 }
 
-- (oneway void)didRelease2600Button:(OE2600Button)button forPlayer:(NSUInteger)player {
+- (void)didReleasePV2600Button:(PV2600Button)button forPlayer:(NSUInteger)player {
     _pad[player][A2600EmulatorValues[button]] = 0;
 }
 
@@ -539,14 +576,8 @@ static void writeSaveFile(const char* path, int type)
     return 2;
 }
 
-- (BOOL)saveStateToFileAtPath:(NSString *)fileName
-{
-    return NO;
-}
-
-- (BOOL)loadStateFromFileAtPath:(NSString *)fileName
-{
-    return NO;
+-(BOOL)supportsSaveStates {
+	return NO;
 }
 
 @end

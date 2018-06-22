@@ -32,10 +32,11 @@ fileprivate extension JSButton {
 class PVN64ControllerViewController: PVControllerViewController<PVN64SystemResponderClient> {
     private var currentButtons: [String?] = []
     private var isON: Bool = false
-    private var displayLink: CADisplayLink? = nil
+    private var displayLink: CADisplayLink?
     private var A: Bool = false
     private var R: Bool = false
     private var L: Bool = false
+//    private var driver: KartDriver = KartDriver(model: MarioKart64.model)
     
     override func layoutViews() {
         buttonGroup?.subviews.forEach {
@@ -68,38 +69,38 @@ class PVN64ControllerViewController: PVControllerViewController<PVN64SystemRespo
         emulatorCore.didMoveJoystick(.analogLeft, withValue: 0, forPlayer: 0)
         emulatorCore.didMoveJoystick(.analogRight, withValue: 0, forPlayer: 0)
         emulatorCore.didMoveJoystick(.analogDown, withValue: 0, forPlayer: 0)
-        var text: String = ""
+//        var text: String = ""
         switch direction {
             case .upLeft:
                 emulatorCore.didMoveJoystick(.analogUp, withValue: 1, forPlayer: 0)
                 emulatorCore.didMoveJoystick(.analogLeft, withValue: 1, forPlayer: 0)
-            text = "L"
+//            text = "L"
             case .up:
                 emulatorCore.didMoveJoystick(.analogUp, withValue: 1, forPlayer: 0)
             case .upRight:
                 emulatorCore.didMoveJoystick(.analogUp, withValue: 1, forPlayer: 0)
                 emulatorCore.didMoveJoystick(.analogRight, withValue: 1, forPlayer: 0)
-            text = "R"
+//            text = "R"
             case .left:
                 emulatorCore.didMoveJoystick(.analogLeft, withValue: 1, forPlayer: 0)
-            text = "L"
+//            text = "L"
             case .right:
                 emulatorCore.didMoveJoystick(.analogRight, withValue: 1, forPlayer: 0)
-            text = "R"
+//            text = "R"
             case .downLeft:
                 emulatorCore.didMoveJoystick(.analogDown, withValue: 1, forPlayer: 0)
                 emulatorCore.didMoveJoystick(.analogLeft, withValue: 1, forPlayer: 0)
-            text = "L"
+//            text = "L"
             case .down:
                 emulatorCore.didMoveJoystick(.analogDown, withValue: 1, forPlayer: 0)
             case .downRight:
                 emulatorCore.didMoveJoystick(.analogDown, withValue: 1, forPlayer: 0)
                 emulatorCore.didMoveJoystick(.analogRight, withValue: 1, forPlayer: 0)
-            text = "R"
+//            text = "R"
             default:
                 break
         }
-        if text == "R" { R = true } else if text == "L" { L = true }
+//        if text == "R" { R = true } else if text == "L" { L = true }
         vibrate()
     }
 
@@ -108,16 +109,16 @@ class PVN64ControllerViewController: PVControllerViewController<PVN64SystemRespo
         emulatorCore.didMoveJoystick(.analogLeft, withValue: 0, forPlayer: 0)
         emulatorCore.didMoveJoystick(.analogRight, withValue: 0, forPlayer: 0)
         emulatorCore.didMoveJoystick(.analogDown, withValue: 0, forPlayer: 0)
-        R = false
-        L = false
+//        R = false
+//        L = false
     }
 
     override func buttonPressed(_ button: JSButton) {
         emulatorCore.didPush(button.buttonTag, forPlayer: 0)
         vibrate()
-        if button.buttonTag == .a {
-            A = true
-        }
+//        if button.buttonTag == .a {
+//            A = true
+//        }
     }
 
     override func buttonReleased(_ button: JSButton) {
@@ -130,7 +131,7 @@ class PVN64ControllerViewController: PVControllerViewController<PVN64SystemRespo
             displayLink?.invalidate()
             displayLink = nil
         }
-        A = false
+//        A = false
     }
 
     override func pressStart(forPlayer player: Int) {
@@ -144,7 +145,7 @@ class PVN64ControllerViewController: PVControllerViewController<PVN64SystemRespo
 
     @objc func timerTick() {
         ELOG("tick")
-        saveData()
+//        saveData()
     }
 
     private func saveData() {
@@ -174,6 +175,28 @@ class PVN64ControllerViewController: PVControllerViewController<PVN64SystemRespo
                     try imageData.write(to: logURL)
                 }
             } catch { print(error) }
+        }
+    }
+    
+    private func getDirection() {
+        var driver: KartDriver = KartDriver(model: MarioKart64())
+        let windah = UIApplication.shared.keyWindow
+        var image: UIImage
+        if let view = windah?.subviews.first?.subviews.first?.subviews.first as? GLKView {
+            image = view.snapshot
+        }
+        driver.predict(image: image) { (control) in
+            switch control {
+            case .accelerate:
+                emulatorCore.didPush(.a, forPlayer: 0)
+                
+            case .accelerateLeft:
+                emulatorCore.didPush(.a, forPlayer: 0)
+                
+            case .accelerateRight:
+                emulatorCore.didPush(.a, forPlayer: 0)
+                
+            }
         }
     }
 }

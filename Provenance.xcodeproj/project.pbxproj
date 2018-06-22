@@ -181,6 +181,7 @@
 		42E63F0617DE78AB005802B0 /* UIImage+Scaling.m in Sources */ = {isa = PBXBuildFile; fileRef = 42E63F0517DE78AB005802B0 /* UIImage+Scaling.m */; };
 		6631AF6320DC00C1006A988F /* MarioKart.n64 in Resources */ = {isa = PBXBuildFile; fileRef = 6631AF6220DC00C0006A988F /* MarioKart.n64 */; };
 		667446E620DD448700C414F5 /* KartDriver.swift in Sources */ = {isa = PBXBuildFile; fileRef = 667446E520DD448700C414F5 /* KartDriver.swift */; };
+		667446E820DD480E00C414F5 /* MarioKart64.mlmodel in Sources */ = {isa = PBXBuildFile; fileRef = 667446E720DD480D00C414F5 /* MarioKart64.mlmodel */; };
 		7556CF7A19DC15C1007F8F97 /* Default.xib in Resources */ = {isa = PBXBuildFile; fileRef = 7556CF7919DC15C1007F8F97 /* Default.xib */; };
 		B302BFA420825ADC0029CEDB /* PVMupen64PlusVideoGlideN64.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = B302BFA320825ADC0029CEDB /* PVMupen64PlusVideoGlideN64.framework */; };
 		B302BFA520825ADC0029CEDB /* PVMupen64PlusVideoGlideN64.framework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = B302BFA320825ADC0029CEDB /* PVMupen64PlusVideoGlideN64.framework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
@@ -1072,6 +1073,7 @@
 		42E63F0517DE78AB005802B0 /* UIImage+Scaling.m */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.objc; path = "UIImage+Scaling.m"; sourceTree = "<group>"; };
 		6631AF6220DC00C0006A988F /* MarioKart.n64 */ = {isa = PBXFileReference; lastKnownFileType = file; path = MarioKart.n64; sourceTree = "<group>"; };
 		667446E520DD448700C414F5 /* KartDriver.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = KartDriver.swift; sourceTree = "<group>"; };
+		667446E720DD480D00C414F5 /* MarioKart64.mlmodel */ = {isa = PBXFileReference; lastKnownFileType = file.mlmodel; path = MarioKart64.mlmodel; sourceTree = "<group>"; };
 		7556CF7919DC15C1007F8F97 /* Default.xib */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = file.xib; path = Default.xib; sourceTree = "<group>"; };
 		AA9B6EDD1D70981000422E5F /* PVPSXControllerViewController.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = PVPSXControllerViewController.swift; sourceTree = "<group>"; };
 		B302BFA320825ADC0029CEDB /* PVMupen64PlusVideoGlideN64.framework */ = {isa = PBXFileReference; explicitFileType = wrapper.framework; path = PVMupen64PlusVideoGlideN64.framework; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -2808,6 +2810,7 @@
 		B3B3B89A1DECF9A700602746 /* N64 */ = {
 			isa = PBXGroup;
 			children = (
+				667446E720DD480D00C414F5 /* MarioKart64.mlmodel */,
 				667446E520DD448700C414F5 /* KartDriver.swift */,
 				B3B3B89C1DECF9D700602746 /* PVN64ControllerViewController.swift */,
 			);
@@ -3751,6 +3754,7 @@
 				B349AE591E9ABCF900ACD416 /* Bcj2Enc.c in Sources */,
 				1FB125961D93E57F00D045D0 /* PVAppearanceViewController.swift in Sources */,
 				B349AE4D1E9ABCF900ACD416 /* 7zFile.c in Sources */,
+				667446E820DD480E00C414F5 /* MarioKart64.mlmodel in Sources */,
 				B349AE7F1E9ABCF900ACD416 /* Sha256.c in Sources */,
 				B349AE931E9ABCF900ACD416 /* 7zDecode.cpp in Sources */,
 				B349AEF31E9ABCF900ACD416 /* BcjRegister.cpp in Sources */,
@@ -4306,7 +4310,7 @@
 					"\"$(SRCROOT)/Carthage/Build/iOS\"",
 				);
 				INFOPLIST_FILE = "Provenance/Provenance-Info.plist";
-				IPHONEOS_DEPLOYMENT_TARGET = 8.0;
+				IPHONEOS_DEPLOYMENT_TARGET = 11.0;
 				LD_RUNPATH_SEARCH_PATHS = "@executable_path/Frameworks";
 				LIBRARY_SEARCH_PATHS = (
 					"$(inherited)",
@@ -4359,7 +4363,7 @@
 					"\"$(SRCROOT)/Carthage/Build/iOS\"",
 				);
 				INFOPLIST_FILE = "Provenance/Provenance-Info.plist";
-				IPHONEOS_DEPLOYMENT_TARGET = 8.0;
+				IPHONEOS_DEPLOYMENT_TARGET = 11.0;
 				LD_RUNPATH_SEARCH_PATHS = "@executable_path/Frameworks";
 				LIBRARY_SEARCH_PATHS = (
 					"$(inherited)",
@@ -4815,7 +4819,7 @@
 					"\"$(SRCROOT)/Carthage/Build/iOS\"",
 				);
 				INFOPLIST_FILE = "Provenance/Provenance-Info.plist";
-				IPHONEOS_DEPLOYMENT_TARGET = 8.0;
+				IPHONEOS_DEPLOYMENT_TARGET = 11.0;
 				LD_RUNPATH_SEARCH_PATHS = "@executable_path/Frameworks";
 				LIBRARY_SEARCH_PATHS = (
 					"$(inherited)",
